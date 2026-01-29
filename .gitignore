@@ -1,0 +1,29 @@
+# logs / data
+*.log
+*.csv
+*.json
+*.jsonl
+*.csv.gz
+*.json.gz
+
+# model / checkpoints
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.model
+*.safetensors
+
+# middle
+*.npy
+*.npz
+*.pkl
+*.pickle
+
+# pycache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# image
+*.png

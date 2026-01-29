@@ -3,6 +3,7 @@ import os
 # os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3,4,5,6,7"
 import sys
 from typing import List
+import inspect
 
 import torch
 import transformers
@@ -63,37 +64,40 @@ def train(args):
         model.model_parallel = True
 
 
+    training_args_kwargs = dict(
+        seed=args.seed,
+        per_device_train_batch_size=args.per_device_batch_size,
+        per_device_eval_batch_size=args.per_device_batch_size,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        warmup_ratio=args.warmup_ratio,
+        num_train_epochs=args.epochs,
+        learning_rate=args.learning_rate,
+        weight_decay=args.weight_decay,
+        lr_scheduler_type=args.lr_scheduler_type,
+        logging_steps=args.logging_step,
+        optim=args.optim,
+        save_strategy=args.save_and_eval_strategy,
+        eval_steps=args.save_and_eval_steps,
+        save_steps=args.save_and_eval_steps,
+        output_dir=args.output_dir,
+        save_total_limit=5,
+        load_best_model_at_end=True,
+        ddp_find_unused_parameters=False if ddp else None,
+        report_to=None,
+        eval_delay=1 if args.save_and_eval_strategy == "epoch" else 2000,
+    )
+
+    ta_params = inspect.signature(transformers.TrainingArguments.__init__).parameters
+    if "evaluation_strategy" in ta_params:
+        training_args_kwargs["evaluation_strategy"] = args.save_and_eval_strategy
+    else:
+        training_args_kwargs["eval_strategy"] = args.save_and_eval_strategy
+
     trainer = transformers.Trainer(
         model=model,
         train_dataset=train_data,
         eval_dataset=valid_data,
-        args=transformers.TrainingArguments(
-            seed=args.seed,
-            per_device_train_batch_size=args.per_device_batch_size,
-            per_device_eval_batch_size=args.per_device_batch_size,
-            gradient_accumulation_steps=args.gradient_accumulation_steps,
-            warmup_ratio=args.warmup_ratio,
-            num_train_epochs=args.epochs,
-            learning_rate=args.learning_rate,
-            weight_decay=args.weight_decay,
-            lr_scheduler_type=args.lr_scheduler_type,
-            # fp16=args.fp16,
-            # bf16=args.bf16,
-            logging_steps=args.logging_step,
-            optim=args.optim,
-            # gradient_checkpointing=gradient_checkpointing,
-            evaluation_strategy=args.save_and_eval_strategy,
-            save_strategy=args.save_and_eval_strategy,
-            eval_steps=args.save_and_eval_steps,
-            save_steps=args.save_and_eval_steps,
-            output_dir=args.output_dir,
-            save_total_limit=5,
-            load_best_model_at_end=True,
-            # deepspeed=args.deepspeed,
-            ddp_find_unused_parameters=False if ddp else None,
-            report_to=None,
-            eval_delay= 1 if args.save_and_eval_strategy=="epoch" else 2000,
-        ),
+        args=transformers.TrainingArguments(**training_args_kwargs),
         tokenizer=tokenizer,
         data_collator=collator,
     )
