@@ -81,7 +81,6 @@ def parse_train_args(parser):
     return parser
 
 def parse_test_args(parser):
-
     parser.add_argument("--ckpt_path", type=str,
                         default="/media/zhengbowen/ckpt/tiger/",
                         help="The checkpoint path")
@@ -103,8 +102,69 @@ def parse_test_args(parser):
     parser.add_argument("--metrics", type=str, default="hit@1,hit@5,hit@10,ndcg@5,ndcg@10",
                         help="test metrics, separate by comma")
     parser.add_argument("--test_task", type=str, default="SeqRec")
+    parser.add_argument(
+        "--model_type",
+        type=str,
+        default="t5",
+        choices=["t5", "decoder_only"],
+        help="which model family to use at test time",
+    )
+    parser.add_argument(
+        "--tokenizer_path",
+        type=str,
+        default="",
+        help="optional tokenizer path; empty means try ckpt_path then base_model",
+    )
+    parser.add_argument(
+        "--max_new_tokens",
+        type=int,
+        default=10,
+        help="max tokens to generate for the predicted item",
+    )
+    return parser
 
 
+def parse_decoder_only_args(parser):
+    parser.add_argument("--d_model", type=int, default=512)
+    parser.add_argument("--n_layers", type=int, default=6)
+    parser.add_argument("--n_heads", type=int, default=8)
+    parser.add_argument("--head_dim", type=int, default=None)
+    parser.add_argument("--n_kv_heads", type=int, default=None)
+
+    parser.add_argument("--multiple_of", type=int, default=256)
+    parser.add_argument("--ffn_dim_multiplier", type=float, default=None)
+
+    parser.add_argument("--ffn_dim", type=int, default=2048)  # backward-compat
+    parser.add_argument("--dropout", type=float, default=0.0)
+    parser.add_argument("--rope_theta", type=float, default=10000.0)
+    parser.add_argument("--max_seq_len", type=int, default=2048)
+
+    parser.add_argument("--init_base_std", type=float, default=None)
+    parser.add_argument(
+        "--init_std_factor",
+        type=str,
+        default="disabled",
+        choices=["disabled", "global_depth", "current_depth", "dim_ratio"],
+    )
+
+    parser.add_argument("--pk_is_enabled", action="store_true", default=False)
+    parser.add_argument("--pk_layers", type=str, default="")
+    parser.add_argument("--pk_mem_n_keys", type=int, default=128)
+    parser.add_argument("--pk_mem_heads", type=int, default=4)
+    parser.add_argument("--pk_mem_knn", type=int, default=None)
+
+    parser.add_argument("--pk_mem_share_values", action="store_true", default=True)
+    parser.add_argument("--pk_mem_k_dim", type=int, default=512)
+    parser.add_argument("--pk_mem_v_dim", type=int, default=-1)
+    parser.add_argument("--pk_swilu_projection", action="store_true", default=True)
+    parser.add_argument("--pk_value_fixed_lr", type=float, default=0.001)
+    parser.add_argument("--pk_value_weight_decay", type=float, default=0.0)
+    parser.add_argument("--pk_mem_gated", action="store_true", default=False)
+    parser.add_argument("--pk_peer_variant", action="store_true", default=False)
+
+    parser.add_argument("--pk_topk", type=int, default=8)      # backward-compat
+    parser.add_argument("--pk_mem_dim", type=int, default=256) # backward-compat
+    parser.add_argument("--pk_use_gating", action="store_true", default=False)  # backward-compat
     return parser
 
 
@@ -129,36 +189,59 @@ def ensure_dir(dir_path):
     os.makedirs(dir_path, exist_ok=True)
 
 
-def load_datasets(args):
+def _to_str_list(v):
+    if v is None:
+        return []
+    if isinstance(v, (list, tuple)):
+        return [str(x) for x in v]
+    s = str(v).strip()
+    if s == "":
+        return []
+    return [x.strip() for x in s.split(",") if x.strip()]
 
-    tasks = args.tasks.split(",")
 
-    train_prompt_sample_num = [int(_) for _ in args.train_prompt_sample_num.split(",")]
+def _to_int_list(v):
+    if v is None:
+        return []
+    if isinstance(v, (list, tuple)):
+        return [int(x) for x in v]
+    s = str(v).strip()
+    if s == "":
+        return []
+    return [int(x) for x in s.split(",") if x.strip()]
+
+
+def load_datasets(cfg):
+    tasks = _to_str_list(cfg.dataset.tasks)
+
+    train_prompt_sample_num = _to_int_list(cfg.dataset.train_prompt_sample_num)
     assert len(tasks) == len(train_prompt_sample_num), "prompt sample number does not match task number"
-    train_data_sample_num = [int(_) for _ in args.train_data_sample_num.split(",")]
+    train_data_sample_num = _to_int_list(cfg.dataset.train_data_sample_num)
     assert len(tasks) == len(train_data_sample_num), "data sample number does not match task number"
 
     train_datasets = []
-    for task, prompt_sample_num,data_sample_num in zip(tasks,train_prompt_sample_num,train_data_sample_num):
+    for task, prompt_sample_num, data_sample_num in zip(tasks, train_prompt_sample_num, train_data_sample_num):
         if task.lower() == "seqrec":
-            dataset = SeqRecDatasetCSV(args, mode="train",  sample_num=data_sample_num)
+            dataset = SeqRecDatasetCSV(cfg, mode="train", sample_num=data_sample_num)
         else:
             raise NotImplementedError
         train_datasets.append(dataset)
 
     train_data = ConcatDataset(train_datasets)
 
-    valid_data = SeqRecDatasetCSV(args,"valid",args.valid_prompt_sample_num)
+    # FIX: valid_data must be a Dataset instance, not a class
+    valid_data = SeqRecDatasetCSV(cfg, mode="valid", sample_num=-1)
 
     return train_data, valid_data
 
-def load_test_dataset(args):
+def load_test_dataset(cfg):
+    task = str(cfg.test.task).lower()
+    sample_num = int(cfg.test.sample_num)
 
-    if args.test_task.lower() == "seqrec":
-        test_data = SeqRecDatasetCSV(args, mode="test", sample_num=args.sample_num)
-        # test_data = SeqRecTestDataset(args, sample_num=args.sample_num)
+    if task == "seqrec":
+        test_data = SeqRecDatasetCSV(cfg, mode="test", sample_num=sample_num)
     else:
-        raise NotImplementedError
+        raise NotImplementedError(f"Unsupported test.task: {cfg.test.task}")
 
     return test_data
 

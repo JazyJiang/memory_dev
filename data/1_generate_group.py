@@ -77,7 +77,7 @@ def group_test_by_prev_period(
 
 
 # DATA_ROOT = "/home/xinyulin/context/data/2026-01-25_5period"
-DATA_ROOT ="/mlx_devbox/users/zhuosong.jiang/playground/2026-01-test-to-delete/data"
+DATA_ROOT ="/mlx_devbox/users/zhuosong.jiang/playground/memory_dev/data"
 for t in range(1, 5):
     prev_path = f"{DATA_ROOT}/D{t-1}/Toys_and_Games_5_2016-10-2018-11.csv"
     curr_path = f"{DATA_ROOT}/D{t}/Toys_and_Games_5_2016-10-2018-11.csv"

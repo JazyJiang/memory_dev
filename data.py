@@ -5,27 +5,41 @@ import numpy as np
 import pandas as pd
 import ipdb
 
+def _cfg_get(obj, key, default=None):
+    try:
+        if obj is None:
+            return default
+        if isinstance(obj, dict):
+            v = obj.get(key, default)
+            return default if v is None else v
+        if hasattr(obj, "get"):
+            v = obj.get(key, default)
+            return default if v is None else v
+        return getattr(obj, key, default)
+    except Exception:
+        return default
+
+
 class BaseDataset(Dataset):
 
-    def __init__(self, args):
+    def __init__(self, cfg):
         super().__init__()
 
-        self.args = args
-        self.dataset = args.dataset
-        # self.data_path = os.path.join(args.data_path, self.dataset)
+        self.cfg = cfg
+        dataset_cfg = _cfg_get(cfg, "dataset", {})
+        global_cfg = _cfg_get(cfg, "global", {})
 
-        self.max_his_len = args.max_his_len
-        self.his_sep = args.his_sep
-        self.index_file = args.index_file
-        self.add_prefix = args.add_prefix
+        self.dataset = str(_cfg_get(dataset_cfg, "name", _cfg_get(dataset_cfg, "dataset", "default")))
+        self.max_his_len = int(_cfg_get(dataset_cfg, "max_his_len", 20))
+        self.his_sep = str(_cfg_get(dataset_cfg, "his_sep", ", "))
+        self.index_file = str(_cfg_get(dataset_cfg, "index_file", "_index.json"))
+        self.add_prefix = bool(_cfg_get(dataset_cfg, "add_prefix", False))
+
+        self.special_token_for_answer = _cfg_get(global_cfg, "special_token_for_answer", None)
 
         self.new_tokens = None
         self.allowed_tokens = None
         self.all_items = None
-
-    def _load_data(self):
-        with open(os.path.join(self.data_path, self.dataset + self.index_file), 'r') as f:
-            self.indices = json.load(f)
 
     def get_new_tokens(self):
         if self.new_tokens is not None:
@@ -36,10 +50,14 @@ class BaseDataset(Dataset):
             for token in index:
                 self.new_tokens.add(token)
         self.new_tokens = sorted(list(self.new_tokens))
-        if self.args.special_token_for_answer:
+        if self.special_token_for_answer:
             self.new_tokens.append("|start_of_answer|")
         return self.new_tokens
-    
+
+    def _load_data(self):
+        with open(os.path.join(self.data_path, self.dataset + self.index_file), 'r') as f:
+            self.indices = json.load(f)
+
     def get_codebook_statistics(self):
         code_set = [set() for _ in range(len(self.indices["0"]))] # e.g., identifier length = 4
         for index in self.indices.values():
@@ -48,8 +66,6 @@ class BaseDataset(Dataset):
         for index in range(len(self.indices["0"])):
             print(f"new token size {index}: {len(code_set[index])}")
         return [len(code_set[_]) for _ in range(4)]
-        
-
     def get_all_items(self):
         if self.all_items is not None:
             return self.all_items
@@ -104,22 +120,21 @@ class BaseDataset(Dataset):
 
 class SeqRecDataset(BaseDataset):
         
-    def __init__(self, args, mode="train", sample_num=-1):
-        super().__init__(args)
-        self.data_path = os.path.join(args.data_path, self.dataset)
+    def __init__(self, cfg, mode="train", sample_num=-1):
+        super().__init__(cfg)
+
+        dataset_cfg = _cfg_get(cfg, "dataset", {})
+        data_path = str(_cfg_get(dataset_cfg, "data_path", ""))
+        self.data_path = os.path.join(data_path, self.dataset)
+
         self.mode = mode
-        self.prompt = "What {dataset} products would user be likely to purchase next after buying {dataset} items {history} ?"
         self.prompt = "{history}"
-        
         self.special_token_for_answer = None
         self.sample_num = sample_num
 
-
-        # load data
         self._load_data()
         self._remap_items()
-        
-        # load data
+
         if self.mode == 'train':
             self.inter_data = self._process_train_data()
         elif self.mode == 'valid':
@@ -322,30 +337,29 @@ import json
 import pandas as pd
 import numpy as np
 from torch.utils.data import Dataset
-
 class SeqRecDatasetCSV(BaseDataset):
-    def __init__(self, args, mode="train", sample_num=-1, 
+    def __init__(self, cfg, mode="train", sample_num=-1, 
                  train_file=None, valid_file=None, test_file=None):
-        super().__init__(args)
-        self.data_path = args.data_path
-        self.dataset = getattr(args, "dataset", "default")
-        self.index_file = getattr(args, "index_file", "_index.json")
+        super().__init__(cfg)
+
+        dataset_cfg = _cfg_get(cfg, "dataset", {})
+
+        self.data_path = str(_cfg_get(dataset_cfg, "data_path", ""))
+        self.dataset = str(_cfg_get(dataset_cfg, "name", "default"))
+        self.index_file = str(_cfg_get(dataset_cfg, "index_file", "_index.json"))
 
         self.mode = mode
         self.prompt = "{history}"
         self.special_token_for_answer = None
         self.sample_num = sample_num
 
-        # read csv file path
-        self.train_file = args.train_file
-        self.valid_file = args.valid_file
-        self.test_file = args.test_file
+        self.train_file = _cfg_get(dataset_cfg, "train_file", train_file)
+        self.valid_file = _cfg_get(dataset_cfg, "valid_file", valid_file)
+        self.test_file = _cfg_get(dataset_cfg, "test_file", test_file)
 
-        # load interaction and remap semantic iD
         self._load_from_csv()
         self._remap_items()
 
-        # load interaction data
         if self.mode == 'train':
             self.inter_data = self._process_train_data()
         elif self.mode == 'valid':
@@ -656,5 +670,3 @@ class SeqRecDatasetCSV(BaseDataset):
 #     def __getitem__(self, index):
 #         d = self.inter_data[index]
 #         return dict(input_ids=d["inters"], labels=d["item"])
-
-

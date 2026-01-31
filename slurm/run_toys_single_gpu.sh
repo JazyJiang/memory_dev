@@ -6,16 +6,16 @@ export WANDB_DISABLED=true
 export CUDA_LAUNCH_BLOCKING=1
 export CUDA_VISIBLE_DEVICES=0
 
-CODE_ROOT=/mlx_devbox/users/zhuosong.jiang/playground/2026-01-test-to-delete
+CODE_ROOT=/mlx_devbox/users/zhuosong.jiang/playground/memory_dev
 cd "${CODE_ROOT}"
 
 DATASET=Toys_and_Games
 
 # 这里改成你本地 0_process.py 生成 D0~D4 的目录（包含 D0/D1/D2/D3/D4 的那个目录）
-DATA_ROOT=/mlx_devbox/users/zhuosong.jiang/playground/2026-01-test-to-delete/data
+DATA_ROOT=/mlx_devbox/users/zhuosong.jiang/playground/memory_dev/data
 
 # 这里改成包含 Toys_and_Games.TIGER-index.json 的目录
-AMAZON_ROOT=/mlx_devbox/users/zhuosong.jiang/playground/2026-01-test-to-delete/data
+AMAZON_ROOT=/mlx_devbox/users/zhuosong.jiang/playground/memory_dev/data
 
 LR=3e-4
 WD=0.001

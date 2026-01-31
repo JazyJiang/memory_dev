@@ -12,13 +12,12 @@ from transformers import LlamaForCausalLM, LlamaTokenizer, LlamaConfig, T5Tokeni
 
 class Collator(object):
 
-    def __init__(self, args, tokenizer):
-        self.args = args
-        self.only_train_response = args.only_train_response
+    def __init__(self, cfg, tokenizer):
+        self.cfg = cfg
+        self.only_train_response = bool(cfg.dataset.only_train_response)
         self.tokenizer = tokenizer
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token_id = 0
-        # print(self.tokenizer.model_max_length)
 
     def __call__(self, batch):
 
@@ -50,8 +49,8 @@ class Collator(object):
 
 class TestCollator(object):
 
-    def __init__(self, args, tokenizer):
-        self.args = args
+    def __init__(self, cfg, tokenizer):
+        self.cfg = cfg
         self.tokenizer = tokenizer
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token_id = 0
@@ -71,4 +70,3 @@ class TestCollator(object):
         )
 
         return (inputs, targets)
-
