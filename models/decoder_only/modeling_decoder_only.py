@@ -9,6 +9,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers import PreTrainedModel
 from transformers.modeling_outputs import CausalLMOutputWithPast
+try:
+    from transformers.generation.utils import GenerationMixin
+except Exception:  # pragma: no cover
+    from transformers.generation import GenerationMixin
 
 from pkm.memory import HashingMemory
 from .configuration_decoder_only import DecoderOnlyConfig
@@ -126,9 +130,14 @@ class Attention(nn.Module):
         xv = self.wv(x.view_as(x)).view(bsz, seq_len, self.n_kv_heads, self.head_dim)
 
         past_len = 0
+        past_k = past_v = None
         if past_key_value is not None:
             past_k, past_v = past_key_value
-            past_len = int(past_k.shape[1])
+            if past_k is None or past_v is None:
+                past_key_value = None
+                past_k = past_v = None
+            else:
+                past_len = int(past_k.shape[1])
 
         xq, xk = apply_rotary_emb(
             xq,
@@ -332,13 +341,31 @@ class DecoderOnlyTransformer(nn.Module):
         seq_len = int(input_ids.shape[1])
         past_len = 0
         if past_key_values is not None and len(past_key_values) > 0 and past_key_values[0] is not None:
-            past_len = int(past_key_values[0][0].shape[1])
+            pkv0 = past_key_values[0]
+            if (
+                isinstance(pkv0, (tuple, list))
+                and len(pkv0) == 2
+                and pkv0[0] is not None
+                and pkv0[1] is not None
+            ):
+                past_len = int(pkv0[0].shape[1])
 
         freq_cis = self.rope_embeddings(seqlen=past_len + seq_len)
 
         presents: List[Tuple[torch.Tensor, torch.Tensor]] = []
         for i, block in enumerate(self.blocks):
-            pkv = past_key_values[i] if past_key_values is not None else None
+            pkv = None
+            if past_key_values is not None:
+                pkv = past_key_values[i]
+                if not (
+                    pkv is not None
+                    and isinstance(pkv, (tuple, list))
+                    and len(pkv) == 2
+                    and pkv[0] is not None
+                    and pkv[1] is not None
+                ):
+                    pkv = None
+
             x, present = block(
                 x,
                 freq_cis,
@@ -354,7 +381,7 @@ class DecoderOnlyTransformer(nn.Module):
         return x, (tuple(presents) if use_cache else None)
 
 
-class DecoderOnlyForCausalLM(PreTrainedModel):
+class DecoderOnlyForCausalLM(PreTrainedModel, GenerationMixin):
     config_class = DecoderOnlyConfig
 
     def __init__(self, config: DecoderOnlyConfig) -> None:
@@ -387,8 +414,28 @@ class DecoderOnlyForCausalLM(PreTrainedModel):
         self.lm_head = new_embeddings
 
     def prepare_inputs_for_generation(self, input_ids, attention_mask=None, past_key_values=None, **kwargs):
+        has_real_past = False
         if past_key_values is not None:
+            try:
+                if len(past_key_values) > 0 and past_key_values[0] is not None:
+                    pkv0 = past_key_values[0]
+                    if (
+                        isinstance(pkv0, (tuple, list))
+                        and len(pkv0) == 2
+                        and pkv0[0] is not None
+                        and pkv0[1] is not None
+                        and int(pkv0[0].shape[1]) > 0
+                    ):
+                        has_real_past = True
+            except Exception:
+                has_real_past = True
+
+        if not has_real_past:
+            past_key_values = None
+
+        if has_real_past:
             input_ids = input_ids[:, -1:]
+
         return {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
@@ -404,6 +451,72 @@ class DecoderOnlyForCausalLM(PreTrainedModel):
             k, v = layer_past
             reordered.append((k.index_select(0, beam_idx), v.index_select(0, beam_idx)))
         return tuple(reordered)
+
+    def _build_full_inputs(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: Optional[torch.Tensor],
+        labels: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        pad_token_id = int(getattr(self.config, "pad_token_id", 0))
+
+        if attention_mask is None:
+            attention_mask = (input_ids != pad_token_id).to(dtype=torch.long)
+        else:
+            attention_mask = attention_mask.to(dtype=torch.long)
+
+        prompt_lens = attention_mask.sum(dim=1).tolist()
+
+        response_input_ids = labels.clone()
+        response_input_ids[response_input_ids == -100] = pad_token_id
+        response_lens = (labels != -100).to(dtype=torch.long).sum(dim=1).tolist()
+
+        max_seq_len = int(getattr(self.config, "max_seq_len", input_ids.size(1)))
+
+        full_input_ids_list: List[torch.Tensor] = []
+        full_attention_mask_list: List[torch.Tensor] = []
+        full_labels_list: List[torch.Tensor] = []
+
+        for i in range(input_ids.size(0)):
+            p_len = int(prompt_lens[i])
+            r_len = int(response_lens[i])
+
+            prompt_ids_i = input_ids[i, :p_len]
+            response_ids_i = response_input_ids[i, :r_len]
+            response_labels_i = labels[i, :r_len]
+
+            seq_ids = torch.cat([prompt_ids_i, response_ids_i], dim=0)
+            seq_labels = torch.cat(
+                [
+                    torch.full((p_len,), -100, dtype=labels.dtype, device=labels.device),
+                    response_labels_i,
+                ],
+                dim=0,
+            )
+            seq_attn = torch.ones((seq_ids.size(0),), dtype=torch.long, device=input_ids.device)
+
+            if seq_ids.size(0) > max_seq_len:
+                seq_ids = seq_ids[-max_seq_len:]
+                seq_labels = seq_labels[-max_seq_len:]
+                seq_attn = seq_attn[-max_seq_len:]
+
+            full_input_ids_list.append(seq_ids)
+            full_labels_list.append(seq_labels)
+            full_attention_mask_list.append(seq_attn)
+
+        batch_max_len = max(x.size(0) for x in full_input_ids_list)
+
+        full_input_ids = input_ids.new_full((input_ids.size(0), batch_max_len), pad_token_id)
+        full_attention_mask = attention_mask.new_zeros((input_ids.size(0), batch_max_len))
+        full_labels = labels.new_full((input_ids.size(0), batch_max_len), -100)
+
+        for i in range(input_ids.size(0)):
+            L = full_input_ids_list[i].size(0)
+            full_input_ids[i, :L] = full_input_ids_list[i]
+            full_attention_mask[i, :L] = full_attention_mask_list[i]
+            full_labels[i, :L] = full_labels_list[i]
+
+        return full_input_ids, full_attention_mask, full_labels
 
     def forward(
         self,

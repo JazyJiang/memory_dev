@@ -58,6 +58,12 @@ class DecoderOnlyConfig(PretrainedConfig):
         self.d_model = int(d_model)
         self.n_layers = int(n_layers)
 
+        # HF/transformers standard alias fields (used by generate/cache utils)
+        self.hidden_size = self.d_model
+        self.num_hidden_layers = self.n_layers
+        self.num_attention_heads = int(n_heads) if n_heads is not None else None
+        self.num_key_value_heads = int(n_kv_heads) if n_kv_heads is not None else None
+
         self.head_dim = int(head_dim) if head_dim is not None else None
         self.n_heads = int(n_heads) if n_heads is not None else None
         self.n_kv_heads = int(n_kv_heads) if n_kv_heads is not None else None

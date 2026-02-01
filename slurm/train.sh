@@ -1,17 +1,22 @@
 #!/bin/bash
 set -euo pipefail
-# proxy
+# =================   proxy   ===============================
 export HTTP_PROXY=http://sys-proxy-rd-relay.byted.org:8118
 export HTTPS_PROXY=http://sys-proxy-rd-relay.byted.org:8118
 export http_proxy=http://sys-proxy-rd-relay.byted.org:8118
 export https_proxy=http://sys-proxy-rd-relay.byted.org:8118
 export NO_PROXY=localhost,127.0.0.1,.byted.org,byted.org,.bytedance.net,bytedance.net
 export no_proxy=$NO_PROXY
+# =================   no tf   ===============================
+export TRANSFORMERS_NO_TF=1
+export USE_TF=0
+# ===========================================================
 
 export WANDB_MODE=disabled
 export WANDB_DISABLED=true
 export CUDA_LAUNCH_BLOCKING=1
 export CUDA_VISIBLE_DEVICES=0,1
+
 
 CODE_ROOT=/mlx_devbox/users/zhuosong.jiang/playground/memory_dev
 cd "${CODE_ROOT}"

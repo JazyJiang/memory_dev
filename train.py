@@ -4,6 +4,8 @@ import os
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
+os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
+
 import torch
 import transformers
 from transformers import T5Config, T5ForConditionalGeneration, T5Tokenizer
@@ -231,6 +233,9 @@ def _build_training_arguments(cfg, ddp: bool) -> transformers.TrainingArguments:
     )
 
     ta_params = inspect.signature(transformers.TrainingArguments.__init__).parameters
+    if "save_safetensors" in ta_params:
+        training_args_kwargs["save_safetensors"] = False
+
     if "evaluation_strategy" in ta_params:
         training_args_kwargs["evaluation_strategy"] = str(train_cfg.save_and_eval_strategy)
     else:

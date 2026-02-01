@@ -27,3 +27,6 @@ __pycache__/
 
 # image
 *.png
+
+# TensorBoard event files
+**/events.out.tfevents.*
