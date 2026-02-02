@@ -32,12 +32,12 @@ AMAZON_ROOT=/mlx_devbox/users/zhuosong.jiang/playground/memory_dev/data
 BASE_MODEL=google-t5/t5-small
 
 # Strategy for train.py: t5_seq2seq / decoder_only
-STRATEGY=decoder_only
-TEST_MODEL_TYPE=decoder_only
+STRATEGY=t5_seq2seq
+TEST_MODEL_TYPE=t5_seq2seq
 
 LR=3e-4
 WD=0.001
-PREFIX=ablation-decoder-only
+PREFIX=ablation-t5-small
 BATCH_SIZE=256
 TEST_BATCH_SIZE=256
 NUM_BEAMS=20

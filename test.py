@@ -72,7 +72,7 @@ def _apply_test_defaults(cfg):
         {
             "global": {"seed": 42, "gpu_id": 0},
             "model": {
-                "type": "t5",
+                "type": "t5_seq2seq",
                 "ckpt_path": "",
                 "base_model": "",
                 "tokenizer_path": "",
@@ -154,7 +154,7 @@ def test(cfg):
     test_data = load_test_dataset(cfg)
     all_items = test_data.get_all_items()
 
-    if model_type == "t5":
+    if model_type in ("t5_seq2seq", "t5"):
         device_map = {"": int(cfg["global"].gpu_id)}
         model = T5ForConditionalGeneration.from_pretrained(
             ckpt_path,
@@ -200,7 +200,7 @@ def test(cfg):
             inputs = batch[0].to(device)
             targets = batch[1]
 
-            if model_type == "t5":
+            if model_type in ("t5_seq2seq", "t5"):
                 output = model.generate(
                     input_ids=inputs["input_ids"],
                     attention_mask=inputs["attention_mask"],

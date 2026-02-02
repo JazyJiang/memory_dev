@@ -259,7 +259,7 @@ def train_t5_seq2seq(cfg) -> None:
         print(OmegaConf.to_yaml(cfg, resolve=True))
 
     base_model = str(cfg.model.t5_seq2seq.base_model)
-    tokenizer_max_length = int(cfg.model.t5_seq2seq.get("tokenizer_max_length") or 512)
+    tokenizer_max_length = int(cfg.train.model_max_length)
 
     config = T5Config.from_pretrained(base_model)
     tokenizer = T5Tokenizer.from_pretrained(
