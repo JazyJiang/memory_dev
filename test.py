@@ -5,12 +5,13 @@ from typing import Any, List, Optional, Tuple
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from transformers import T5ForConditionalGeneration, T5Tokenizer
+from transformers import T5Config, T5ForConditionalGeneration, T5Tokenizer
 
 from collator import TestCollator
 from evaluate import get_topk_results
 from generation_trie import Trie
 from models.decoder_only import DecoderOnlyForCausalLM
+from pkm.memory import HashingMemory
 from utils import (
     computeTopNAccuracy,
     load_test_dataset,
@@ -93,9 +94,149 @@ def _apply_test_defaults(cfg):
                 "sample_num": -1,
                 "filter_items": False,
             },
+            "pkm": {
+                "t5_seq2seq": {
+                    "pk_is_enabled": False,
+                    "pk_encoder_layers": "",
+                    "pk_decoder_layers": "",
+                    "pk_mem_n_keys": 128,
+                    "pk_mem_heads": 4,
+                    "pk_mem_knn": 32,
+                    "pk_mem_share_values": False,
+                    "pk_mem_k_dim": 512,
+                    "pk_mem_v_dim": -1,
+                    "pk_swilu_projection": True,
+                    "pk_value_fixed_lr": 0.001,
+                    "pk_mem_gated": False,
+                    "pk_peer_variant": False,
+                    "pk_topk": 8,
+                    "pk_mem_dim": None,
+                }
+            },
         }
     )
     return OmegaConf.merge(defaults, cfg)
+
+
+def _parse_int_list(v: Any) -> List[int]:
+    if v is None:
+        return []
+    if isinstance(v, (list, tuple)):
+        return [int(x) for x in v]
+    s = str(v).strip()
+    if not s:
+        return []
+    parts = [p.strip() for p in s.split(",")]
+    out: List[int] = []
+    for p in parts:
+        if not p:
+            continue
+        out.append(int(p))
+    return out
+
+
+def _inject_pkm_into_t5_seq2seq(model: T5ForConditionalGeneration, cfg) -> None:
+    pkm_cfg = cfg.pkm.get("t5_seq2seq", {})
+    if not bool(pkm_cfg.get("pk_is_enabled") or False):
+        return
+
+    encoder_layers = set(_parse_int_list(pkm_cfg.get("pk_encoder_layers") or ""))
+    decoder_layers = set(_parse_int_list(pkm_cfg.get("pk_decoder_layers") or ""))
+
+    d_model = int(model.config.d_model)
+
+    def _replace_block_ffn(block, layer_id: int, which: str) -> None:
+        if not hasattr(block, "layer") or len(block.layer) < 1:
+            raise ValueError(f"Unexpected T5 block structure for {which} layer {layer_id}")
+
+        ff_layer = block.layer[-1]
+        if not hasattr(ff_layer, "DenseReluDense"):
+            raise ValueError(
+                f"Cannot find DenseReluDense in {which} layer {layer_id}. "
+                f"Got ff_layer={type(ff_layer)} with attrs={sorted(dir(ff_layer))}"
+            )
+
+        ff_layer.DenseReluDense = HashingMemory(
+            input_dim=d_model,
+            output_dim=d_model,
+            mem_n_keys=int(pkm_cfg.get("pk_mem_n_keys") or 128),
+            mem_heads=int(pkm_cfg.get("pk_mem_heads") or 4),
+            mem_knn=int(pkm_cfg.get("pk_mem_knn") or 32),
+            mem_share_values=bool(pkm_cfg.get("pk_mem_share_values") or False),
+            mem_k_dim=int(pkm_cfg.get("pk_mem_k_dim") or 512),
+            mem_v_dim=int(pkm_cfg.get("pk_mem_v_dim") or -1),
+            swilu_projection=bool(pkm_cfg.get("pk_swilu_projection") or True),
+            value_fixed_lr=float(pkm_cfg.get("pk_value_fixed_lr") or 0.001),
+            mem_gated=bool(pkm_cfg.get("pk_mem_gated") or False),
+            peer_variant=bool(pkm_cfg.get("pk_peer_variant") or False),
+            topk=pkm_cfg.get("pk_topk"),
+            mem_dim=pkm_cfg.get("pk_mem_dim"),
+            mem_input_dropout=0.0,
+            mem_query_dropout=0.0,
+            mem_value_dropout=0.0,
+        )
+        ff_layer.DenseReluDense.layer_id = int(layer_id)
+
+    if encoder_layers:
+        for i, block in enumerate(model.encoder.block):
+            if i in encoder_layers:
+                _replace_block_ffn(block, i, which="encoder")
+
+    if decoder_layers:
+        for i, block in enumerate(model.decoder.block):
+            if i in decoder_layers:
+                _replace_block_ffn(block, i, which="decoder")
+
+
+def _load_t5_model_for_test(cfg, tokenizer: T5Tokenizer, device: torch.device) -> T5ForConditionalGeneration:
+    ckpt_path = str(cfg.model.ckpt_path).strip()
+    if not ckpt_path:
+        raise ValueError("Missing model.ckpt_path for t5_seq2seq test")
+
+    config = T5Config.from_pretrained(ckpt_path)
+    model = T5ForConditionalGeneration(config)
+
+    if len(tokenizer) != int(model.config.vocab_size):
+        model.resize_token_embeddings(len(tokenizer))
+
+    _inject_pkm_into_t5_seq2seq(model, cfg)
+
+    weights_path = os.path.join(ckpt_path, "pytorch_model.bin")
+    if not os.path.isfile(weights_path):
+        raise FileNotFoundError(
+            f"Cannot find '{weights_path}'. "
+            "Expected a HuggingFace Trainer-style checkpoint dir containing pytorch_model.bin."
+        )
+
+    state_dict = torch.load(weights_path, map_location="cpu")
+    missing, unexpected = model.load_state_dict(state_dict, strict=True)
+    if missing or unexpected:
+        raise RuntimeError(f"State dict mismatch. missing={missing}, unexpected={unexpected}")
+
+    model.to(device)
+    model.eval()
+    return model
+
+
+def _load_tokenizer_for_test(cfg) -> T5Tokenizer:
+    tokenizer_path = str(cfg.model.tokenizer_path or "").strip()
+    ckpt_path = str(cfg.model.ckpt_path or "").strip()
+    base_model = str(cfg.model.base_model or "").strip()
+
+    source = tokenizer_path or ckpt_path or base_model
+    if not source:
+        raise ValueError(
+            "Missing tokenizer source. Provide one of: "
+            "model.tokenizer_path, model.ckpt_path, model.base_model"
+        )
+
+    # Keep truncation/length consistent with training when available.
+    tokenizer_kwargs = {}
+    if hasattr(cfg, "train") and hasattr(cfg.train, "model_max_length") and cfg.train.model_max_length is not None:
+        tokenizer_kwargs["model_max_length"] = int(cfg.train.model_max_length)
+
+    tokenizer = T5Tokenizer.from_pretrained(source, **tokenizer_kwargs)
+    return tokenizer
 
 
 def _load_cfg_from_cli(argv: List[str]):
@@ -114,31 +255,6 @@ def _load_cfg_from_cli(argv: List[str]):
     return merged
 
 
-def _load_tokenizer_for_test(cfg) -> T5Tokenizer:
-    tokenizer_path = str(cfg.model.get("tokenizer_path") or "").strip()
-    if tokenizer_path:
-        tokenizer = T5Tokenizer.from_pretrained(tokenizer_path)
-    else:
-        ckpt_path = str(cfg.model.get("ckpt_path") or "").strip()
-        base_model = str(cfg.model.get("base_model") or "").strip()
-
-        if ckpt_path:
-            try:
-                tokenizer = T5Tokenizer.from_pretrained(ckpt_path)
-            except Exception:
-                if not base_model:
-                    raise
-                tokenizer = T5Tokenizer.from_pretrained(base_model)
-        else:
-            if not base_model:
-                raise ValueError("Missing model.ckpt_path and model.base_model; cannot load tokenizer")
-            tokenizer = T5Tokenizer.from_pretrained(base_model)
-
-    if tokenizer.pad_token_id is None:
-        tokenizer.pad_token_id = 0
-    return tokenizer
-
-
 def test(cfg):
     from omegaconf import OmegaConf  # type: ignore
 
@@ -155,12 +271,7 @@ def test(cfg):
     all_items = test_data.get_all_items()
 
     if model_type in ("t5_seq2seq", "t5"):
-        device_map = {"": int(cfg["global"].gpu_id)}
-        model = T5ForConditionalGeneration.from_pretrained(
-            ckpt_path,
-            low_cpu_mem_usage=True,
-            device_map=device_map,
-        )
+        model = _load_t5_model_for_test(cfg, tokenizer, device)
         candidate_trie = Trie(
             [[tokenizer.pad_token_id] + tokenizer.encode(candidate) for candidate in all_items]
         )

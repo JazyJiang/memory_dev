@@ -138,6 +138,23 @@ def _apply_train_defaults(cfg):
                     "pk_use_gating": False,
                 }
             },
+            "t5_seq2seq": {
+                "pk_is_enabled": False,
+                "pk_encoder_layers": "",
+                "pk_decoder_layers": "",
+                "pk_mem_n_keys": 128,
+                "pk_mem_heads": 4,
+                "pk_mem_knn": 32,
+                "pk_mem_share_values": False,
+                "pk_mem_k_dim": 512,
+                "pk_mem_v_dim": -1,
+                "pk_swilu_projection": True,
+                "pk_value_fixed_lr": 0.001,
+                "pk_mem_gated": False,
+                "pk_peer_variant": False,
+                "pk_topk": 8,
+                "pk_mem_dim": None,
+            },
         }
     )
     cfg = OmegaConf.merge(defaults, cfg)
@@ -244,6 +261,59 @@ def _build_training_arguments(cfg, ddp: bool) -> transformers.TrainingArguments:
     return transformers.TrainingArguments(**training_args_kwargs)
 
 
+def _inject_pkm_into_t5_seq2seq(model: T5ForConditionalGeneration, cfg) -> None:
+    pkm_cfg = cfg.pkm.get("t5_seq2seq", {})
+    if not bool(pkm_cfg.get("pk_is_enabled") or False):
+        return
+
+    encoder_layers = set(_parse_int_list(pkm_cfg.get("pk_encoder_layers") or ""))
+    decoder_layers = set(_parse_int_list(pkm_cfg.get("pk_decoder_layers") or ""))
+
+    d_model = int(model.config.d_model)
+
+    def _replace_block_ffn(block, layer_id: int, which: str) -> None:
+        if not hasattr(block, "layer") or len(block.layer) < 1:
+            raise ValueError(f"Unexpected T5 block structure for {which} layer {layer_id}")
+
+        ff_layer = block.layer[-1]
+        if not hasattr(ff_layer, "DenseReluDense"):
+            raise ValueError(
+                f"Cannot find DenseReluDense in {which} layer {layer_id}. "
+                f"Got ff_layer={type(ff_layer)} with attrs={sorted(dir(ff_layer))}"
+            )
+
+        ff_layer.DenseReluDense = HashingMemory(
+            input_dim=d_model,
+            output_dim=d_model,
+            mem_n_keys=int(pkm_cfg.get("pk_mem_n_keys") or 128),
+            mem_heads=int(pkm_cfg.get("pk_mem_heads") or 4),
+            mem_knn=int(pkm_cfg.get("pk_mem_knn") or 32),
+            mem_share_values=bool(pkm_cfg.get("pk_mem_share_values") or False),
+            mem_k_dim=int(pkm_cfg.get("pk_mem_k_dim") or 512),
+            mem_v_dim=int(pkm_cfg.get("pk_mem_v_dim") or -1),
+            swilu_projection=bool(pkm_cfg.get("pk_swilu_projection") or True),
+            value_fixed_lr=float(pkm_cfg.get("pk_value_fixed_lr") or 0.001),
+            mem_gated=bool(pkm_cfg.get("pk_mem_gated") or False),
+            peer_variant=bool(pkm_cfg.get("pk_peer_variant") or False),
+            topk=pkm_cfg.get("pk_topk"),
+            mem_dim=pkm_cfg.get("pk_mem_dim"),
+            mem_input_dropout=0.0,
+            mem_query_dropout=0.0,
+            mem_value_dropout=0.0,
+        )
+        ff_layer.DenseReluDense.layer_id = int(layer_id)
+
+    if encoder_layers:
+        for i, block in enumerate(model.encoder.block):
+            if i in encoder_layers:
+                _replace_block_ffn(block, i, which="encoder")
+
+    if decoder_layers:
+        for i, block in enumerate(model.decoder.block):
+            if i in decoder_layers:
+                _replace_block_ffn(block, i, which="decoder")
+
+
 def train_t5_seq2seq(cfg) -> None:
     set_seed(int(cfg["global"].seed))
     ensure_dir(str(cfg.train.output_dir))
@@ -284,6 +354,7 @@ def train_t5_seq2seq(cfg) -> None:
 
     model = T5ForConditionalGeneration(config)
     model.resize_token_embeddings(len(tokenizer))
+    _inject_pkm_into_t5_seq2seq(model, cfg)
     model.to(device)
 
     if local_rank == 0:

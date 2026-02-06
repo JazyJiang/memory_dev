@@ -15,7 +15,7 @@ export USE_TF=0
 export WANDB_MODE=disabled
 export WANDB_DISABLED=true
 export CUDA_LAUNCH_BLOCKING=1
-export CUDA_VISIBLE_DEVICES=0,1
+export CUDA_VISIBLE_DEVICES=0
 
 CODE_ROOT=/mlx_devbox/users/zhuosong.jiang/playground/memory_dev
 cd "${CODE_ROOT}"
@@ -37,7 +37,7 @@ TEST_MODEL_TYPE=t5_seq2seq
 
 LR=3e-4
 WD=0.001
-PREFIX=ablation-t5-small
+PREFIX=ablation-t5-small-w-pkm
 BATCH_SIZE=256
 TEST_BATCH_SIZE=256
 NUM_BEAMS=20
@@ -74,8 +74,48 @@ PK_MEM_V_DIM=-1
 PK_TOPK=8
 PK_MEM_GATED=0
 
+T5_PK_IS_ENABLED=1
+T5_PK_ENCODER_LAYERS=""      # e.g., "0,3,5"
+T5_PK_DECODER_LAYERS="2"     # e.g., "6,7,8"
+T5_PK_MEM_KNN=32
+T5_PK_MEM_SHARE_VALUES=0
+T5_PK_VALUE_FIXED_LR=0.001
+
 mkdir -p ./log/${DATASET}/train
 mkdir -p ./log/${DATASET}/test
+
+T5_OVERRIDES=()
+if [[ "${STRATEGY}" == "t5_seq2seq" ]]; then
+  T5_OVERRIDES+=(
+    "pkm.t5_seq2seq.pk_is_enabled=false"
+    "pkm.t5_seq2seq.pk_mem_gated=false"
+  )
+
+  if [[ "${T5_PK_IS_ENABLED}" == "1" ]]; then
+    T5_OVERRIDES+=(
+      "pkm.t5_seq2seq.pk_is_enabled=true"
+      "pkm.t5_seq2seq.pk_encoder_layers=${T5_PK_ENCODER_LAYERS}"
+      "pkm.t5_seq2seq.pk_decoder_layers=${T5_PK_DECODER_LAYERS}"
+      "pkm.t5_seq2seq.pk_mem_n_keys=${PK_MEM_N_KEYS}"
+      "pkm.t5_seq2seq.pk_mem_heads=${PK_MEM_HEADS}"
+      "pkm.t5_seq2seq.pk_mem_knn=${T5_PK_MEM_KNN}"
+      "pkm.t5_seq2seq.pk_mem_k_dim=${PK_MEM_K_DIM}"
+      "pkm.t5_seq2seq.pk_mem_v_dim=${PK_MEM_V_DIM}"
+      "pkm.t5_seq2seq.pk_topk=${PK_TOPK}"
+      "pkm.t5_seq2seq.pk_value_fixed_lr=${T5_PK_VALUE_FIXED_LR}"
+    )
+
+    if [[ "${T5_PK_MEM_SHARE_VALUES}" == "1" ]]; then
+      T5_OVERRIDES+=( "pkm.t5_seq2seq.pk_mem_share_values=true" )
+    else
+      T5_OVERRIDES+=( "pkm.t5_seq2seq.pk_mem_share_values=false" )
+    fi
+
+    if [[ "${PK_MEM_GATED}" == "1" ]]; then
+      T5_OVERRIDES+=( "pkm.t5_seq2seq.pk_mem_gated=true" )
+    fi
+  fi
+fi
 
 DECODER_ONLY_OVERRIDES=()
 if [[ "${STRATEGY}" == "decoder_only" ]]; then
@@ -117,7 +157,7 @@ fi
 PREV_CKPT=${CODE_ROOT}/ckpt/${DATASET}/${STRATEGY}-D0-${LR}lr-${WD}wd-${PREFIX}
 mkdir -p "${PREV_CKPT}"
 
-torchrun --nproc_per_node=2 --master_port=2309 train.py \
+torchrun --nproc_per_node=1 --master_port=2309 train.py \
   config="${CONFIG_FILE}" \
   "strategy=${STRATEGY}" \
   "model.${STRATEGY}.base_model=${BASE_MODEL}" \
@@ -134,6 +174,7 @@ torchrun --nproc_per_node=2 --master_port=2309 train.py \
   "train.weight_decay=${WD}" \
   "train.save_and_eval_strategy=epoch" \
   "train.model_max_length=${MODEL_MAX_LENGTH}" \
+  "${T5_OVERRIDES[@]}" \
   "${DECODER_ONLY_OVERRIDES[@]}" \
   > "./log/${DATASET}/train/${PREFIX}-D0-train.log"
 
@@ -172,6 +213,7 @@ for test_d in $(seq $((train_d + 1)) 4); do
       "test.num_beams=${NUM_BEAMS}" \
       "test.max_new_tokens=${MAX_NEW_TOKENS}" \
       "test.filter_items=true" \
+      "${T5_OVERRIDES[@]}" \
       > "${logfile}"
   done
 
@@ -185,7 +227,7 @@ for train_d in 1 2 3; do
   CUR_CKPT=${CODE_ROOT}/ckpt/${DATASET}/${STRATEGY}-D${train_d}-${LR}lr-${WD}wd-${PREFIX}
   mkdir -p "${CUR_CKPT}"
 
-  torchrun --nproc_per_node=2 --master_port=$((2310 + train_d)) train.py \
+  torchrun --nproc_per_node=1 --master_port=$((2310 + train_d)) train.py \
     config="${CONFIG_FILE}" \
     "strategy=${STRATEGY}" \
     "model.${STRATEGY}.base_model=${BASE_MODEL}" \
@@ -202,6 +244,7 @@ for train_d in 1 2 3; do
     "train.weight_decay=${WD}" \
     "train.save_and_eval_strategy=epoch" \
     "train.model_max_length=${MODEL_MAX_LENGTH}" \
+    "${T5_OVERRIDES[@]}" \
     "${DECODER_ONLY_OVERRIDES[@]}" \
     > "./log/${DATASET}/train/${PREFIX}-D${train_d}-finetune.log"
 
@@ -234,6 +277,7 @@ for train_d in 1 2 3; do
         "test.num_beams=${NUM_BEAMS}" \
         "test.max_new_tokens=${MAX_NEW_TOKENS}" \
         "test.filter_items=true" \
+        "${T5_OVERRIDES[@]}" \
         > "${logfile}"
     done
 
