@@ -1,0 +1,53 @@
+# T5 seq2seq + PKM(hashing memory) hyperparameter sweep candidates
+# Note: T5-small hidden_dim(d_model)=512 is fixed unless you change base_model.
+
+strategy: ["t5_seq2seq"]  # fixed: only sweep t5_seq2seq (exclude decoder-only)
+
+# ----- Training (global) -----
+train.learning_rate: [3.0e-4]
+train.batch_size: [512]
+
+# ----- PKM enable + placement -----
+pkm.t5_seq2seq.pk_is_enabled: [true]
+
+# 先砍 placement：4 种 decoder 代表结构 × 3 种 encoder policy = 12
+placement_pairs:
+  # dec="3" (single mid layer)
+  - {enc: "",  dec: "3"}
+  - {enc: "3", dec: "3"}
+  - {enc: "2", dec: "3"}
+
+  # dec="1,3" (skip odd)
+  - {enc: "",    dec: "1,3"}
+  - {enc: "1,3", dec: "1,3"}
+  - {enc: "2",   dec: "1,3"}
+
+  # dec="0,2" (skip even / earlier)
+  - {enc: "",    dec: "0,2"}
+  - {enc: "0,2", dec: "0,2"}
+  - {enc: "2",   dec: "0,2"}
+
+  # dec="1,3,5" (sparse three-layer)
+  - {enc: "",      dec: "1,3,5"}
+  - {enc: "1,3,5", dec: "1,3,5"}
+  - {enc: "2",     dec: "1,3,5"}
+
+# ----- PKM capacity / retrieval -----
+pkm.t5_seq2seq.pk_mem_n_keys: [128, 512, 1024]
+pkm.t5_seq2seq.pk_topk: [16, 128, 512]
+
+# ----- PKM internal dims -----
+pkm.t5_seq2seq.pk_mem_k_dim: [512]
+pkm.t5_seq2seq.pk_mem_v_dim: [-1]
+
+# ----- PKM optimizer knobs -----
+pkm.t5_seq2seq.pk_value_fixed_lr: ["tied"]
+pkm.t5_seq2seq.pk_value_weight_decay: [0.0]
+
+# ----- PKM switches -----
+pkm.t5_seq2seq.pk_mem_gated: [false]
+pkm.t5_seq2seq.pk_mem_share_values: [false]
+
+# ----- Usually keep fixed (reduce interactions) -----
+pkm.t5_seq2seq.pk_swilu_projection: [true]  # keep consistent with current default usage
+pkm.t5_seq2seq.pk_peer_variant: [false]  # keep off unless you explicitly want PEER
