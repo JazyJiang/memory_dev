@@ -1,36 +1,28 @@
 # T5 seq2seq + PKM(hashing memory) hyperparameter sweep candidates
 # Note: T5-small hidden_dim(d_model)=512 is fixed unless you change base_model.
 
-strategy: ["t5_seq2seq"]  # fixed: only sweep t5_seq2seq (exclude decoder-only)
+strategy: t5_seq2seq  # fixed: only sweep t5_seq2seq (exclude decoder-only)
 
 # ----- Training (global) -----
 train.learning_rate: [3.0e-4]
-train.batch_size: [512]
+train.batch_size: [256]
 
 # ----- PKM enable + placement -----
 pkm.t5_seq2seq.pk_is_enabled: [true]
 
-# 先砍 placement：4 种 decoder 代表结构 × 3 种 encoder policy = 12
+# placement：仅 sweep decoder 侧（encoder 侧固定不放 memory layer）
 placement_pairs:
   # dec="3" (single mid layer)
-  - {enc: "",  dec: "3"}
-  - {enc: "3", dec: "3"}
-  - {enc: "2", dec: "3"}
+  - {enc: "", dec: "3"}
 
   # dec="1,3" (skip odd)
-  - {enc: "",    dec: "1,3"}
-  - {enc: "1,3", dec: "1,3"}
-  - {enc: "2",   dec: "1,3"}
+  - {enc: "", dec: "1,3"}
 
   # dec="0,2" (skip even / earlier)
-  - {enc: "",    dec: "0,2"}
-  - {enc: "0,2", dec: "0,2"}
-  - {enc: "2",   dec: "0,2"}
+  - {enc: "", dec: "0,2"}
 
   # dec="1,3,5" (sparse three-layer)
-  - {enc: "",      dec: "1,3,5"}
-  - {enc: "1,3,5", dec: "1,3,5"}
-  - {enc: "2",     dec: "1,3,5"}
+  - {enc: "", dec: "1,3,5"}
 
 # ----- PKM capacity / retrieval -----
 pkm.t5_seq2seq.pk_mem_n_keys: [128, 512, 1024]

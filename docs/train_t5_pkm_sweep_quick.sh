@@ -110,8 +110,8 @@ ENC_TAG=$(sanitize_layers "${T5_PK_ENCODER_LAYERS}")
 DEC_TAG=$(sanitize_layers "${T5_PK_DECODER_LAYERS}")
 
 RUN_TAG="t5pkm_lr${LR}_bs${BATCH_SIZE}_enc${ENC_TAG}_dec${DEC_TAG}_nk${PK_MEM_N_KEYS}_topk${PK_TOPK}_k${PK_MEM_K_DIM}_v${PK_MEM_V_DIM}_pklr${EFFECTIVE_PK_VALUE_LR}_pkwd${T5_PK_VALUE_WEIGHT_DECAY}_g${PK_MEM_GATED}_sv${T5_PK_MEM_SHARE_VALUES}"
-
-RUN_CKPT_ROOT="${CODE_ROOT}/ckpt/${DATASET}/sweep_t5_pkm/${RUN_TAG}"
+LOCAL_CKPT_ROOT=${LOCAL_CKPT_ROOT:-/tmp/${USER}/memory_dev_ckpt}
+RUN_CKPT_ROOT="${LOCAL_CKPT_ROOT}/ckpt/${DATASET}/sweep_t5_pkm/${RUN_TAG}"
 RUN_LOG_ROOT="${CODE_ROOT}/log/${DATASET}/sweep_t5_pkm/${RUN_TAG}"
 TRAIN_LOG_DIR="${RUN_LOG_ROOT}/train"
 TEST_LOG_DIR="${RUN_LOG_ROOT}/test"
