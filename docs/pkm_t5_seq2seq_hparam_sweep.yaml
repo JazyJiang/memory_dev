@@ -12,21 +12,16 @@ pkm.t5_seq2seq.pk_is_enabled: [true]
 
 # placement：仅 sweep decoder 侧（encoder 侧固定不放 memory layer）
 placement_pairs:
-  # dec="3" (single mid layer)
   - {enc: "", dec: "3"}
 
-  # dec="1,3" (skip odd)
-  - {enc: "", dec: "1,3"}
-
-  # dec="0,2" (skip even / earlier)
-  - {enc: "", dec: "0,2"}
-
-  # dec="1,3,5" (sparse three-layer)
-  - {enc: "", dec: "1,3,5"}
-
 # ----- PKM capacity / retrieval -----
-pkm.t5_seq2seq.pk_mem_n_keys: [128, 512, 1024]
-pkm.t5_seq2seq.pk_topk: [16, 128, 512]
+# 用 capacity_pairs 做“成对扫描”，避免 pk_mem_n_keys × pk_topk 的笛卡尔积
+capacity_pairs:
+  - {n_keys: 1024, topk: 1024}
+  - {n_keys: 1024, topk: 512}
+  - {n_keys: 512, topk: 256}
+  - {n_keys: 512, topk: 512}
+  - {n_keys: 1024, topk: 256}
 
 # ----- PKM internal dims -----
 pkm.t5_seq2seq.pk_mem_k_dim: [512]

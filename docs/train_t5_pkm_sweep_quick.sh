@@ -43,7 +43,7 @@ MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-10}
 NUM_BEAMS=${NUM_BEAMS:-20}
 
 WD=${WD:-0.001}                  # fixed (not swept for now)
-TEST_BATCH_SIZE=${TEST_BATCH_SIZE:-256}
+TEST_BATCH_SIZE=${TEST_BATCH_SIZE:-8}
 
 # -------------------------
 # Core sweep variables (set via env, or edit defaults here)

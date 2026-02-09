@@ -213,7 +213,12 @@ def iter_grid(sweep: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
     DEC_KEY = "pkm.t5_seq2seq.pk_decoder_layers"
     PLACEMENT_PAIRS_KEY = "placement_pairs"
 
+    N_KEYS_KEY = "pkm.t5_seq2seq.pk_mem_n_keys"
+    TOPK_KEY = "pkm.t5_seq2seq.pk_topk"
+    CAPACITY_PAIRS_KEY = "capacity_pairs"
+
     placement_pairs = sweep.get(PLACEMENT_PAIRS_KEY, None)
+    capacity_pairs = sweep.get(CAPACITY_PAIRS_KEY, None)
 
     if placement_pairs is not None:
         for k in (ENC_KEY, DEC_KEY):
@@ -224,9 +229,18 @@ def iter_grid(sweep: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
                     f"to define linked (enc, dec) placements."
                 )
 
+    if capacity_pairs is not None:
+        for k in (N_KEYS_KEY, TOPK_KEY):
+            if k in sweep and is_sweep_key(k):
+                raise ValueError(
+                    f"When `{CAPACITY_PAIRS_KEY}` is set, do not sweep `{k}` as a list. "
+                    f"Remove `{k}` from YAML (or set it to a scalar), and only use `{CAPACITY_PAIRS_KEY}` "
+                    f"to define linked (n_keys, topk) capacity pairs."
+                )
+
     fixed: Dict[str, Any] = {}
     for k, v in sweep.items():
-        if k == PLACEMENT_PAIRS_KEY:
+        if k in (PLACEMENT_PAIRS_KEY, CAPACITY_PAIRS_KEY):
             continue
         if not is_sweep_key(k):
             fixed[k] = v
@@ -234,10 +248,12 @@ def iter_grid(sweep: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
     keys: List[str] = []
     values: List[List[Any]] = []
     for sweep_key, sweep_values in sweep.items():
-        if sweep_key == PLACEMENT_PAIRS_KEY:
+        if sweep_key in (PLACEMENT_PAIRS_KEY, CAPACITY_PAIRS_KEY):
             continue
         if is_sweep_key(sweep_key):
             if placement_pairs is not None and sweep_key in (ENC_KEY, DEC_KEY):
+                continue
+            if capacity_pairs is not None and sweep_key in (N_KEYS_KEY, TOPK_KEY):
                 continue
             keys.append(sweep_key)
             values.append(normalize_value(sweep_values))
@@ -251,28 +267,60 @@ def iter_grid(sweep: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
         dec = str(item.get("dec", "")).strip()
         return enc, dec
 
-    parsed_pairs: List[Tuple[str, str]] = []
+    def parse_capacity_pair(item: Any) -> Tuple[int, int]:
+        if not isinstance(item, dict):
+            raise ValueError(f"{CAPACITY_PAIRS_KEY} item must be a dict, got {type(item)}")
+
+        n_keys_raw = item.get("n_keys", item.get("pk_mem_n_keys", item.get("pk_mem_n_keys")))
+        topk_raw = item.get("topk", item.get("pk_topk", item.get("pk_topk")))
+
+        n_keys = int(n_keys_raw)
+        topk = int(topk_raw)
+        return n_keys, topk
+
+    parsed_placements: List[Tuple[str, str]] = []
     if placement_pairs is not None:
-        parsed_pairs = [parse_pair(item) for item in normalize_value(placement_pairs)]
-        if not parsed_pairs:
+        parsed_placements = [parse_pair(item) for item in normalize_value(placement_pairs)]
+        if not parsed_placements:
             raise ValueError(f"`{PLACEMENT_PAIRS_KEY}` is set but empty.")
-        if len(set(parsed_pairs)) != len(parsed_pairs):
-            raise ValueError(f"`{PLACEMENT_PAIRS_KEY}` contains duplicate (enc, dec) pairs: {parsed_pairs}")
+        if len(set(parsed_placements)) != len(parsed_placements):
+            raise ValueError(f"`{PLACEMENT_PAIRS_KEY}` contains duplicate (enc, dec) pairs: {parsed_placements}")
+
+    parsed_capacities: List[Tuple[int, int]] = []
+    if capacity_pairs is not None:
+        parsed_capacities = [parse_capacity_pair(item) for item in normalize_value(capacity_pairs)]
+        if not parsed_capacities:
+            raise ValueError(f"`{CAPACITY_PAIRS_KEY}` is set but empty.")
+        if len(set(parsed_capacities)) != len(parsed_capacities):
+            raise ValueError(f"`{CAPACITY_PAIRS_KEY}` contains duplicate (n_keys, topk) pairs: {parsed_capacities}")
 
     for combo in base_product:
         out0 = dict(fixed)
         out0.update({k: combo[i] for i, k in enumerate(keys)})
 
-        if placement_pairs is None:
-            return_keys = sorted(out0.keys())
-            yield {k: out0[k] for k in return_keys}
-            continue
+        candidates: List[Dict[str, Any]] = [out0]
 
-        for enc, dec in parsed_pairs:
-            out = dict(out0)
-            out[ENC_KEY] = enc
-            out[DEC_KEY] = dec
+        if placement_pairs is not None:
+            next_candidates: List[Dict[str, Any]] = []
+            for base in candidates:
+                for enc, dec in parsed_placements:
+                    out = dict(base)
+                    out[ENC_KEY] = enc
+                    out[DEC_KEY] = dec
+                    next_candidates.append(out)
+            candidates = next_candidates
 
+        if capacity_pairs is not None:
+            next_candidates = []
+            for base in candidates:
+                for n_keys, topk in parsed_capacities:
+                    out = dict(base)
+                    out[N_KEYS_KEY] = n_keys
+                    out[TOPK_KEY] = topk
+                    next_candidates.append(out)
+            candidates = next_candidates
+
+        for out in candidates:
             return_keys = sorted(out.keys())
             yield {k: out[k] for k in return_keys}
 
@@ -362,6 +410,12 @@ def main() -> None:
 
     if "placement_pairs" in sweep:
         for k in ("pkm.t5_seq2seq.pk_encoder_layers", "pkm.t5_seq2seq.pk_decoder_layers"):
+            if k not in sweep_keys:
+                sweep_keys.append(k)
+        sweep_keys = sorted(sweep_keys)
+
+    if "capacity_pairs" in sweep:
+        for k in ("pkm.t5_seq2seq.pk_mem_n_keys", "pkm.t5_seq2seq.pk_topk"):
             if k not in sweep_keys:
                 sweep_keys.append(k)
         sweep_keys = sorted(sweep_keys)
