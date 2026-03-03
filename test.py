@@ -12,6 +12,11 @@ from evaluate import get_topk_results
 from generation_trie import Trie
 from models.decoder_only import DecoderOnlyForCausalLM
 from pkm.memory import HashingMemory
+from pkm.context import PKMContext
+from pkm.monitor import PKMMonitor
+from torch.utils.tensorboard import SummaryWriter
+import matplotlib.pyplot as plt
+
 from utils import (
     computeTopNAccuracy,
     load_test_dataset,
@@ -303,6 +308,21 @@ def test(cfg):
     print("data num:", len(test_data))
     model.eval()
 
+    # Initialize PKM Monitor
+    PKMMonitor.init(device=device)
+
+    # Initialize TensorBoard Writer
+    test_logging_dir = getattr(cfg.test, "logging_dir", None)
+    if test_logging_dir:
+        test_log_dir = os.path.expandvars(os.path.expanduser(str(test_logging_dir)))
+    else:
+        test_run_name = f"test_{os.path.basename(str(cfg.model.ckpt_path))}"
+        test_log_dir = os.path.join("runs", "test", test_run_name)
+
+    os.makedirs(test_log_dir, exist_ok=True)
+    writer = SummaryWriter(log_dir=test_log_dir)
+    print(f"Test logs will be saved to {test_log_dir}")
+
     with torch.no_grad():
         all_pred_list = []
         all_gold_list = []
@@ -310,6 +330,10 @@ def test(cfg):
         for _, batch in enumerate(tqdm(test_loader)):
             inputs = batch[0].to(device)
             targets = batch[1]
+
+            # Set Group IDs for PKM Monitoring
+            if "group_ids" in inputs:
+                PKMContext.set_group_ids(inputs["group_ids"])
 
             if model_type in ("t5_seq2seq", "t5"):
                 output = model.generate(
@@ -360,6 +384,18 @@ def test(cfg):
             )
             all_pred_list.extend(topk_res)
             all_gold_list.extend(targets)
+
+        # Log PKM Activation Heatmap
+        data = PKMMonitor.get_and_reset()
+        if data is not None:
+            try:
+                fig = PKMMonitor.plot_heatmap(data)
+                writer.add_figure("PKM/Test_Activation", fig, global_step=0)
+                plt.close(fig)
+                print("Logged PKM Activation Heatmap to TensorBoard")
+            except Exception as e:
+                print(f"Failed to plot heatmap: {e}")
+        writer.close()
 
         test_results = computeTopNAccuracy(all_gold_list, all_pred_list, topN=[5, 10, 20])
         print("=== End ===")

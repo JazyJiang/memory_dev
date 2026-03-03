@@ -330,10 +330,11 @@ class SeqRecDataset(BaseDataset):
 
     def __getitem__(self, index):
         d = self.inter_data[index]
-        return dict(input_ids=d["inters"], labels=d["item"])
+        return dict(input_ids=d["inters"], labels=d["item"], group_id=d.get("group_id", 4))
     
 import os
 import json
+import re
 import pandas as pd
 import numpy as np
 from torch.utils.data import Dataset
@@ -357,6 +358,9 @@ class SeqRecDatasetCSV(BaseDataset):
         self.valid_file = _cfg_get(dataset_cfg, "valid_file", valid_file)
         self.test_file = _cfg_get(dataset_cfg, "test_file", test_file)
 
+        self.test_group_id = self._infer_test_group_id()
+        self.user_group_map = self._load_user_group_map()
+
         self._load_from_csv()
         self._remap_items()
 
@@ -374,6 +378,55 @@ class SeqRecDatasetCSV(BaseDataset):
             self.inter_data = self._process_test_cold_data()
         else:
             raise NotImplementedError(f"Unsupported mode: {self.mode}")
+
+    # =====================
+    #       load user group map
+    # =====================
+    def _infer_test_group_id(self):
+        if not self.test_file:
+            return None
+        name = os.path.basename(str(self.test_file))
+        m = re.search(r"test_user_group(\d+)\.csv$", name)
+        if m is None:
+            m = re.search(r"user_group(\d+)", name)
+        if m is None:
+            return None
+        try:
+            g = int(m.group(1))
+        except Exception:
+            return None
+        if g <= 0:
+            return None
+        return g - 1
+
+    def _load_user_group_map(self):
+        candidates = []
+
+        def _add_dir(d):
+            if d:
+                candidates.append(os.path.join(d, "user_group_map.json"))
+
+        try:
+            if self.mode in ("train", "valid") and self.train_file:
+                _add_dir(os.path.dirname(str(self.train_file)))
+
+            if self.test_file:
+                test_dir = os.path.dirname(str(self.test_file))
+                _add_dir(test_dir)
+                _add_dir(os.path.dirname(test_dir))
+
+            if self.train_file:
+                _add_dir(os.path.dirname(str(self.train_file)))
+
+            for map_path in candidates:
+                if os.path.exists(map_path):
+                    print(f"Loading user group map from {map_path}")
+                    with open(map_path, "r") as f:
+                        return json.load(f)
+        except Exception as e:
+            print(f"Warning: Failed to load user group map: {e}")
+
+        return {}
 
     # =====================
     #       load csv interacitions
@@ -409,10 +462,11 @@ class SeqRecDatasetCSV(BaseDataset):
         def remap_split(df):
             remap_dict = {}
             for index, row in df.iterrows():
+                uid = str(row.get("user_id", index))
                 history_ids = eval(row["history_item_id"])
                 target_code = "".join(self.indices[str(row["item_id"])])
                 history_code = ["".join(self.indices[str(i)]) for i in history_ids]
-                remap_dict[index] = [history_code, target_code]
+                remap_dict[index] = [uid, history_code, target_code]
             return remap_dict
 
         self.remapped_train = remap_split(self.train_data)
@@ -437,22 +491,28 @@ class SeqRecDatasetCSV(BaseDataset):
     # =====================
     def _process_train_data(self):
         inter_data = []
-        for uid, (history, target) in self.remapped_train.items():
-            one_data = dict(item=target, inters=self.prompt.format(history="".join(history)))
+        for _, (uid, history, target) in self.remapped_train.items():
+            group_id = self.user_group_map.get(str(uid), 4)
+            one_data = dict(item=target, inters=self.prompt.format(history="".join(history)), group_id=group_id)
             inter_data.append(one_data)
         return inter_data
 
     def _process_valid_data(self):
         inter_data = []
-        for uid, (history, target) in self.remapped_valid.items():
-            one_data = dict(item=target, inters=self.prompt.format(history="".join(history)))
+        for _, (uid, history, target) in self.remapped_valid.items():
+            group_id = self.user_group_map.get(str(uid), 4)
+            one_data = dict(item=target, inters=self.prompt.format(history="".join(history)), group_id=group_id)
             inter_data.append(one_data)
         return inter_data
 
     def _process_test_data(self):
         inter_data = []
-        for uid, (history, target) in self.remapped_test.items():
-            one_data = dict(item=[target], inters=self.prompt.format(history="".join(history)))
+        for _, (uid, history, target) in self.remapped_test.items():
+            if self.test_group_id is not None:
+                group_id = int(self.test_group_id)
+            else:
+                group_id = self.user_group_map.get(str(uid), 4)
+            one_data = dict(item=[target], inters=self.prompt.format(history="".join(history)), group_id=group_id)
             inter_data.append(one_data)
         print(f"interaction in test: {len(inter_data)}")
         if self.sample_num > 0:
@@ -462,14 +522,19 @@ class SeqRecDatasetCSV(BaseDataset):
     def _process_test_warm_data(self):
         inter_data = []
         warm_cnt = 0
-        for uid, (history, target) in self.remapped_test.items():
+        for _, (uid, history, target) in self.remapped_test.items():
             one_data = dict()
             if target in self.warm_items:
                 one_data["item"] = [target]
                 warm_cnt += 1
             else:
                 one_data["item"] = []
+            if self.test_group_id is not None:
+                group_id = int(self.test_group_id)
+            else:
+                group_id = self.user_group_map.get(str(uid), 4)
             one_data["inters"] = self.prompt.format(history="".join(history))
+            one_data["group_id"] = group_id
             inter_data.append(one_data)
         print("warm interaction in test:", warm_cnt)
         return inter_data
@@ -477,14 +542,19 @@ class SeqRecDatasetCSV(BaseDataset):
     def _process_test_cold_data(self):
         inter_data = []
         cold_cnt = 0
-        for uid, (history, target) in self.remapped_test.items():
+        for _, (uid, history, target) in self.remapped_test.items():
             one_data = dict()
             if target in self.cold_items:
                 one_data["item"] = [target]
                 cold_cnt += 1
             else:
                 one_data["item"] = []
+            if self.test_group_id is not None:
+                group_id = int(self.test_group_id)
+            else:
+                group_id = self.user_group_map.get(str(uid), 4)
             one_data["inters"] = self.prompt.format(history="".join(history))
+            one_data["group_id"] = group_id
             inter_data.append(one_data)
         print("cold interaction in test:", cold_cnt)
         return inter_data
@@ -494,7 +564,7 @@ class SeqRecDatasetCSV(BaseDataset):
 
     def __getitem__(self, index):
         d = self.inter_data[index]
-        return dict(input_ids=d["inters"], labels=d["item"])
+        return dict(input_ids=d["inters"], labels=d["item"], group_id=d.get("group_id", 4))
 
 
 # class SeqRecDatasetCSV(BaseDataset):

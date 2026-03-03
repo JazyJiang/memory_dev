@@ -8,6 +8,8 @@ import numpy as np
 import torch
 from torch import nn
 from torch.nn import functional as F
+from .context import PKMContext
+from .monitor import PKMMonitor
 
 logger = getLogger()
 
@@ -274,7 +276,7 @@ class HashingMemory(nn.Module):
         query = F.dropout(query, p=self.query_dropout, training=self.training)
         assert query.shape == (bs * self.heads, self.k_dim)
 
-        scores, indices = self.get_indices(query, self.knn)
+        scores, indices = self.get_indices(query, self.knn, batch_size=B, seq_len=T)
 
         scores = F.softmax(scores.float(), dim=-1).type_as(scores)
 
@@ -331,7 +333,7 @@ class HashingMemory(nn.Module):
 
         return output
 
-    def get_indices(self, query: torch.Tensor, knn: int):
+    def get_indices(self, query: torch.Tensor, knn: int, batch_size=None, seq_len=None):
         assert query.dim() == 2 and query.size(1) == self.k_dim
         bs = len(query) // self.heads
         query = query.view(-1, self.heads, self.k_dim)
@@ -348,8 +350,55 @@ class HashingMemory(nn.Module):
         scores1 = torch.einsum("blh, lkh->blk", q1, keys1)
         scores2 = torch.einsum("blh, lkh->blk", q2, keys2)
 
+        # Warmup Logic: Mask scores based on group_ids
+        if self.training and PKMContext.is_warmup() and batch_size is not None and seq_len is not None:
+            group_ids = PKMContext.get_group_ids()
+            if group_ids is not None:
+                # Ensure group_ids is on the same device
+                if group_ids.device != scores1.device:
+                    group_ids = group_ids.to(scores1.device)
+                
+                # Calculate start/end indices for each group
+                # Assume 5 groups (0-4)
+                # n_keys = 128
+                starts = (group_ids.float() * n_keys / 5).long()
+                ends = ((group_ids.float() + 1) * n_keys / 5).long()
+                
+                # Create range [1, N]
+                range_tensor = torch.arange(n_keys, device=scores1.device).unsqueeze(0) # [1, N]
+                
+                # Valid mask [B, N]
+                valid_mask = (range_tensor >= starts.unsqueeze(1)) & (range_tensor < ends.unsqueeze(1))
+                
+                # Handle group_id < 0 (no mask)
+                no_mask_indices = (group_ids < 0)
+                if no_mask_indices.any():
+                    valid_mask[no_mask_indices] = True
+
+                # Expand to [B*T, Heads, N]
+                # [B, N] -> [B, 1, 1, N] -> [B, T, Heads, N] -> [B*T, Heads, N]
+                valid_mask = valid_mask.unsqueeze(1).unsqueeze(2)
+                valid_mask = valid_mask.expand(batch_size, seq_len, self.heads, n_keys)
+                valid_mask = valid_mask.reshape(-1, self.heads, n_keys)
+                
+                # Apply mask
+                scores1 = scores1.masked_fill(~valid_mask, -1e9)
+                scores2 = scores2.masked_fill(~valid_mask, -1e9)
+
         scores1, indices1 = scores1.topk(knn, dim=2, largest=True)
         scores2, indices2 = scores2.topk(knn, dim=2, largest=True)
+
+        if batch_size is not None:
+            group_ids = PKMContext.get_group_ids()
+            if group_ids is not None:
+                # Handle beam search batch expansion
+                # If batch_size > group_ids.shape[0], repeat group_ids
+                if group_ids.shape[0] != batch_size:
+                    if batch_size % group_ids.shape[0] == 0:
+                        beam_width = batch_size // group_ids.shape[0]
+                        group_ids = group_ids.repeat_interleave(beam_width)
+                
+                PKMMonitor.update(group_ids, indices1, batch_size, seq_len)
 
         all_scores = (
             scores1.view(bs, self.heads, knn, 1).expand(bs, self.heads, knn, knn)

@@ -40,6 +40,9 @@ class Collator(object):
         inputs['labels'] = labels['input_ids']
         inputs['labels'][inputs['labels'] == self.tokenizer.pad_token_id] = -100
 
+        group_ids = [d.get("group_id", 4) for d in batch]
+        inputs["group_ids"] = torch.tensor(group_ids, dtype=torch.long)
+
         # print(inputs.input_ids[0])
         # print(inputs.labels[0])
 
@@ -68,5 +71,8 @@ class TestCollator(object):
             truncation=True,
             return_attention_mask=True,
         )
+
+        group_ids = [d.get("group_id", 4) for d in batch]
+        inputs["group_ids"] = torch.tensor(group_ids, dtype=torch.long)
 
         return (inputs, targets)

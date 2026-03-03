@@ -8,11 +8,18 @@ os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
 
 import torch
 import transformers
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+from omegaconf import OmegaConf
 from transformers import T5Config, T5ForConditionalGeneration, T5Tokenizer
+from transformers.integrations import TensorBoardCallback
 
 from collator import Collator
 from models.decoder_only import DecoderOnlyConfig, DecoderOnlyForCausalLM
 from pkm.memory import HashingMemory
+from pkm.context import PKMContext
+from pkm.monitor import PKMMonitor
 from utils import ensure_dir, load_datasets, set_seed
 
 
@@ -154,6 +161,8 @@ def _apply_train_defaults(cfg):
                 "pk_peer_variant": False,
                 "pk_topk": 8,
                 "pk_mem_dim": None,
+                "pk_use_gating": False,
+                "pk_warmup_epochs": 10,
             },
         }
     )
@@ -237,6 +246,7 @@ def _build_training_arguments(cfg, ddp: bool) -> transformers.TrainingArguments:
         weight_decay=float(train_cfg.weight_decay),
         lr_scheduler_type=str(train_cfg.lr_scheduler_type),
         logging_steps=int(train_cfg.logging_step),
+        logging_dir=str(train_cfg.get("logging_dir", f"{train_cfg.output_dir}/runs")), # Support custom logging dir
         optim=str(train_cfg.optim),
         save_strategy=str(train_cfg.save_and_eval_strategy),
         eval_steps=int(train_cfg.save_and_eval_steps),
@@ -245,7 +255,8 @@ def _build_training_arguments(cfg, ddp: bool) -> transformers.TrainingArguments:
         save_total_limit=5,
         load_best_model_at_end=True,
         ddp_find_unused_parameters=False if ddp else None,
-        report_to=None,
+        report_to=["tensorboard"],
+        remove_unused_columns=False,
         eval_delay=1 if str(train_cfg.save_and_eval_strategy) == "epoch" else 2000,
     )
 
@@ -314,9 +325,80 @@ def _inject_pkm_into_t5_seq2seq(model: T5ForConditionalGeneration, cfg) -> None:
                 _replace_block_ffn(block, i, which="decoder")
 
 
+class PKMEpochCallback(transformers.TrainerCallback):
+    def __init__(self):
+        super().__init__()
+        self.trainer = None
+
+    def _get_tb_writer(self):
+        t = getattr(self, "trainer", None)
+        if t is None:
+            return None
+        handler = getattr(t, "callback_handler", None)
+        callbacks = getattr(handler, "callbacks", None)
+        if not callbacks:
+            return None
+        for cb in callbacks:
+            if isinstance(cb, TensorBoardCallback):
+                w = getattr(cb, "tb_writer", None)
+                if w is None:
+                    w = getattr(cb, "_tb_writer", None)
+                if w is None:
+                    w = getattr(cb, "writer", None)
+                return w
+        return None
+
+    def on_epoch_begin(self, args, state, control, **kwargs):
+        PKMContext.set_training(True)
+        PKMContext.set_epoch(int(state.epoch))
+        if state.is_world_process_zero:
+            print(f"PKMContext: Epoch {PKMContext.get_epoch()}, Warmup? {PKMContext.is_warmup()}")
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        PKMContext.set_training(True)
+        PKMMonitor.init(device=args.device)
+
+    def on_step_begin(self, args, state, control, **kwargs):
+        PKMContext.set_training(True)
+
+    def on_prediction_step(self, args, state, control, **kwargs):
+        PKMContext.set_training(False)
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if not state.is_world_process_zero:
+            return
+        writer = self._get_tb_writer()
+        if writer is None:
+            return
+        data = PKMMonitor.get_and_reset()
+        if data is None:
+            return
+        if getattr(data, "sum", None) is not None and data.sum() <= 0:
+            return
+
+        try:
+            fig = PKMMonitor.plot_heatmap(data)
+            step = int(getattr(state, "global_step", 0) or 0)
+            writer.add_figure("PKM/Train_Activation", fig, global_step=step)
+            writer.flush()
+            plt.close(fig)
+        except Exception:
+            try:
+                plt.close("all")
+            except Exception:
+                pass
+
+    def on_evaluate(self, args, state, control, **kwargs):
+        PKMContext.set_training(True)
+
+    def on_predict(self, args, state, control, **kwargs):
+        PKMContext.set_training(False)
+
 def train_t5_seq2seq(cfg) -> None:
     set_seed(int(cfg["global"].seed))
     ensure_dir(str(cfg.train.output_dir))
+
+    PKMContext.set_warmup_epochs(int(cfg.pkm.t5_seq2seq.pk_warmup_epochs))
 
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     ddp = world_size != 1
@@ -364,6 +446,16 @@ def train_t5_seq2seq(cfg) -> None:
         model.is_parallelizable = True
         model.model_parallel = True
 
+    # Monkey patch forward to capture group_ids
+    original_forward = model.forward
+    def forward_with_context(*args, **kwargs):
+        if "group_ids" in kwargs:
+            PKMContext.set_group_ids(kwargs.pop("group_ids"))
+        kwargs.pop("num_items_in_batch", None)
+        return original_forward(*args, **kwargs)
+    model.forward = forward_with_context
+
+    monitor_callback = PKMEpochCallback()
     trainer = transformers.Trainer(
         model=model,
         train_dataset=train_data,
@@ -371,7 +463,9 @@ def train_t5_seq2seq(cfg) -> None:
         args=_build_training_arguments(cfg, ddp=ddp),
         tokenizer=tokenizer,
         data_collator=collator,
+        callbacks=[monitor_callback],
     )
+    monitor_callback.trainer = trainer
     model.config.use_cache = False
 
     trainer.train(resume_from_checkpoint=cfg.train.resume_from_checkpoint)

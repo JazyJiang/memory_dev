@@ -1,0 +1,28 @@
+# PKM Warmup Strategy Sweep Configuration
+# Usage: This file defines the search space for the warmup strategy experiments.
+
+strategy: t5_seq2seq
+
+# Fixed Base Parameters
+train:
+  learning_rate: 1.0e-3
+  batch_size: 512
+
+# PKM Fixed Configuration
+pkm:
+  t5_seq2seq:
+    pk_is_enabled: true
+    pk_mem_n_keys: 128
+    pk_topk: 32
+    pk_encoder_layers: ""
+    pk_decoder_layers: "3"
+
+# ----- Sweep Candidates -----
+# Compare two strategies for D0 (Cold Start):
+# 1. No Warmup (Baseline): D0 warmup = 0
+# 2. Self-Group Warmup (Proposed): D0 warmup = 10
+#
+# Note: D1-D3 warmup is controlled by `finetune_warmup_epochs` (configurable).
+sweep_params:
+  d0_warmup_epochs: [0]
+  finetune_warmup_epochs: [0]
