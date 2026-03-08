@@ -7,6 +7,7 @@ strategy: t5_seq2seq
 train:
   learning_rate: 1.0e-3
   batch_size: 512
+  epochs: 50
 
 # PKM Fixed Configuration
 pkm:
@@ -18,11 +19,10 @@ pkm:
     pk_decoder_layers: "3"
 
 # ----- Sweep Candidates -----
-# Compare two strategies for D0 (Cold Start):
-# 1. No Warmup (Baseline): D0 warmup = 0
-# 2. Self-Group Warmup (Proposed): D0 warmup = 10
-#
-# Note: D1-D3 warmup is controlled by `finetune_warmup_epochs` (configurable).
+# Quick verification setup:
+# - Total train epochs: 5 (see train.epochs)
+# - D0 warmup fixed to 0
+# - D1-D3 warmup fixed to 2
 sweep_params:
   d0_warmup_epochs: [0]
-  finetune_warmup_epochs: [0]
+  finetune_warmup_epochs: [30, 40]

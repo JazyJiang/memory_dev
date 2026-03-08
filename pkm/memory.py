@@ -388,17 +388,15 @@ class HashingMemory(nn.Module):
         scores1, indices1 = scores1.topk(knn, dim=2, largest=True)
         scores2, indices2 = scores2.topk(knn, dim=2, largest=True)
 
-        if batch_size is not None:
+        if batch_size is not None and PKMContext.is_training():
             group_ids = PKMContext.get_group_ids()
             if group_ids is not None:
-                # Handle beam search batch expansion
-                # If batch_size > group_ids.shape[0], repeat group_ids
                 if group_ids.shape[0] != batch_size:
                     if batch_size % group_ids.shape[0] == 0:
                         beam_width = batch_size // group_ids.shape[0]
                         group_ids = group_ids.repeat_interleave(beam_width)
-                
-                PKMMonitor.update(group_ids, indices1, batch_size, seq_len)
+
+                PKMMonitor.update(group_ids, indices1, batch_size, seq_len, scores=scores1)
 
         all_scores = (
             scores1.view(bs, self.heads, knn, 1).expand(bs, self.heads, knn, knn)

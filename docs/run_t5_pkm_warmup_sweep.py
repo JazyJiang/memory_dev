@@ -66,6 +66,7 @@ def infer_runner_defaults(sweep: Dict[str, Any]) -> Dict[str, Any]:
 
     lr = train.get("learning_rate", 3.0e-4)
     bs = train.get("batch_size", 256)
+    epochs = train.get("epochs", None)
 
     enc_layers = pkm_t5.get("pk_encoder_layers", "")
     dec_layers = pkm_t5.get("pk_decoder_layers", "2")
@@ -76,10 +77,16 @@ def infer_runner_defaults(sweep: Dict[str, Any]) -> Dict[str, Any]:
     d0_warmups = normalize_list(sweep_params.get("d0_warmup_epochs", [0, 10]))
     ft_warmups = normalize_list(sweep_params.get("finetune_warmup_epochs", [10]))
 
-    return {
+    out = {
         "strategy": strategy,
         "train.learning_rate": lr,
         "train.batch_size": bs,
+    }
+
+    if epochs is not None:
+        out["train.epochs"] = int(epochs)
+
+    out.update({
         "pkm.t5_seq2seq.pk_is_enabled": True,
         "pkm.t5_seq2seq.pk_encoder_layers": str(enc_layers),
         "pkm.t5_seq2seq.pk_decoder_layers": str(dec_layers),
@@ -87,7 +94,9 @@ def infer_runner_defaults(sweep: Dict[str, Any]) -> Dict[str, Any]:
         "pkm.t5_seq2seq.pk_topk": int(topk),
         "sweep.d0_warmup_epochs": [int(x) for x in d0_warmups],
         "sweep.finetune_warmup_epochs": [int(x) for x in ft_warmups],
-    }
+    })
+
+    return out
 
 
 def iter_warmup_grid(base: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
@@ -105,6 +114,7 @@ def key_for_resume(params: Dict[str, Any]) -> str:
     payload = {
         "train.learning_rate": params.get("train.learning_rate"),
         "train.batch_size": params.get("train.batch_size"),
+        "train.epochs": params.get("train.epochs"),
         "pkm.t5_seq2seq.pk_encoder_layers": params.get("pkm.t5_seq2seq.pk_encoder_layers"),
         "pkm.t5_seq2seq.pk_decoder_layers": params.get("pkm.t5_seq2seq.pk_decoder_layers"),
         "pkm.t5_seq2seq.pk_mem_n_keys": params.get("pkm.t5_seq2seq.pk_mem_n_keys"),
@@ -181,7 +191,17 @@ def export_tb_images(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        ea = EventAccumulator(str(tb_log_dir))
+        ea = EventAccumulator(
+            str(tb_log_dir),
+            size_guidance={
+                "images": 0,
+                "scalars": 0,
+                "tensors": 0,
+                "histograms": 0,
+                "compressedHistograms": 0,
+                "audio": 0,
+            },
+        )
         ea.Reload()
         tags = ea.Tags().get("images", [])
     except Exception:
@@ -206,9 +226,13 @@ def export_tb_images(
         imgs_sel = imgs_sel[::stride]
 
         safe_tag = str(tag).replace("/", "__")
+        is_epoch_tag = str(tag).endswith("_Epoch")
         for j, img in enumerate(imgs_sel):
             step = int(getattr(img, "step", 0) or 0)
-            out_path = out_dir / f"{safe_tag}.step{step}.i{j}.png"
+            prefix = "epoch" if is_epoch_tag else "step"
+            out_path = out_dir / f"{safe_tag}.{prefix}{step}.png"
+            if out_path.exists():
+                out_path = out_dir / f"{safe_tag}.{prefix}{step}.i{j}.png"
             try:
                 out_path.write_bytes(img.encoded_image_string)
             except Exception:
@@ -233,7 +257,7 @@ def main() -> None:
     ap.add_argument("--time_range", default=os.environ.get("TIME_RANGE", "2016-10-2018-11"))
     ap.add_argument("--index_file", default=os.environ.get("INDEX_FILE", ".TIGER-index.json"))
 
-    ap.add_argument("--epochs", type=int, default=int(os.environ.get("EPOCHS", "50")))
+    ap.add_argument("--epochs", type=int, default=None)
     ap.add_argument("--wd", type=float, default=float(os.environ.get("WD", "0.001")))
     ap.add_argument("--model_max_length", type=int, default=int(os.environ.get("MODEL_MAX_LENGTH", "512")))
     ap.add_argument("--max_new_tokens", type=int, default=int(os.environ.get("MAX_NEW_TOKENS", "10")))
@@ -277,6 +301,12 @@ def main() -> None:
 
     sweep = load_yaml(sweep_path)
     base = infer_runner_defaults(sweep)
+
+    sweep_train = sweep.get("train") if isinstance(sweep.get("train"), dict) else {}
+    default_epochs = int(sweep_train.get("epochs", os.environ.get("EPOCHS", "50")))
+    epochs = int(args.epochs) if args.epochs is not None else default_epochs
+
+    base.setdefault("train.epochs", epochs)
 
     if args.result_jsonl is None:
         args.result_jsonl = f"./log/{args.dataset}/sweep_t5_pkm_warmup/result.jsonl"
@@ -340,7 +370,8 @@ def main() -> None:
         n_keys = int(params["pkm.t5_seq2seq.pk_mem_n_keys"])
         topk = int(params["pkm.t5_seq2seq.pk_topk"])
 
-        run_tag = f"t5pkm_d0w{d0_warmup}_ftw{ft_warmup}_lr{lr}_bs{bs}_enc{enc_tag}_dec{dec_tag}_nk{n_keys}_topk{topk}"
+        run_epochs = int(params.get("train.epochs", epochs))
+        run_tag = f"t5pkm_d0w{d0_warmup}_ftw{ft_warmup}_lr{lr}_bs{bs}_ep{run_epochs}_enc{enc_tag}_dec{dec_tag}_nk{n_keys}_topk{topk}"
 
         run_ckpt_root = Path(args.local_ckpt_root) / "ckpt" / args.dataset / "sweep_t5_pkm_warmup" / run_tag
         run_log_root = repo_root / "log" / args.dataset / "sweep_t5_pkm_warmup" / run_tag
@@ -358,6 +389,7 @@ def main() -> None:
             "run_tag": run_tag,
             "train.learning_rate": lr,
             "train.batch_size": bs,
+            "train.epochs": int(params.get("train.epochs", epochs)),
             "pkm.t5_seq2seq.pk_encoder_layers": params.get("pkm.t5_seq2seq.pk_encoder_layers", ""),
             "pkm.t5_seq2seq.pk_decoder_layers": params.get("pkm.t5_seq2seq.pk_decoder_layers", ""),
             "pkm.t5_seq2seq.pk_mem_n_keys": n_keys,
@@ -420,7 +452,7 @@ def main() -> None:
                 f"dataset.index_file={args.index_file}",
                 f"train.batch_size={bs}",
                 f"train.learning_rate={lr}",
-                f"train.epochs={args.epochs}",
+                f"train.epochs={int(params.get('train.epochs', epochs))}",
                 f"train.weight_decay={args.wd}",
                 "train.logging_step=1",
                 "train.save_and_eval_strategy=epoch",
@@ -481,6 +513,7 @@ def main() -> None:
                     f"test.num_beams={args.num_beams}",
                     f"test.max_new_tokens={args.max_new_tokens}",
                     "test.filter_items=true",
+                    "test.log_pkm_heatmap=false",
                     f"test.logging_dir={str(run_log_root / f'D{train_d}' / 'test' / 'runs' / f'testD{test_d}_{group_name}')}",
                 ] + t5_overrides
 
@@ -490,25 +523,59 @@ def main() -> None:
                     append_jsonl(status_jsonl, {"created_at": utc_now(), "status": "failed", "run_tag": run_tag, "phase": f"test_{group_name}_D{train_d}_to_D{test_d}", "returncode": rc2})
                     break
 
-                tb_dir = run_log_root / f"D{train_d}" / "test" / "runs" / f"testD{test_d}_{group_name}"
-                png_dir = tb_dir / "png"
-                saved = export_tb_images(tb_dir, png_dir, tag_prefix="PKM/", last_k=1, stride=1)
-                if saved:
-                    append_jsonl(
-                        status_jsonl,
-                        {
-                            "created_at": utc_now(),
-                            "status": "tb_png_saved",
-                            "run_tag": run_tag,
-                            "phase": f"test_{group_name}_D{train_d}_to_D{test_d}",
-                            "tb_dir": str(tb_dir),
-                            "png_dir": str(png_dir),
-                            "png_count": len(saved),
-                            "png_last": saved[-1],
-                        },
-                    )
+            # Only output ONE heatmap for the whole D{test_d}: run an extra test on the ungrouped file.
+            if not failed:
+                combined_test_file = os.path.join(args.data_root, f"D{test_d}", f"{args.dataset}_5_{args.time_range}.csv")
+                combined_run_name = f"testD{test_d}_allgroups"
+                combined_test_log = test_log_dir / f"{run_tag}_trainD{train_d}_testD{test_d}_{combined_run_name}.log"
+                combined_tb_dir = run_log_root / f"D{train_d}" / "test" / "runs" / combined_run_name
+
+                cmd_test_all = [
+                    "python",
+                    "test.py",
+                    f"config={str(cfg_path)}",
+                    "model.type=t5_seq2seq",
+                    "global.gpu_id=0",
+                    f"model.ckpt_path={str(cur_ckpt)}",
+                    f"model.tokenizer_path={str(cur_ckpt)}",
+                    f"model.base_model={args.base_model}",
+                    f"dataset.name={args.dataset}",
+                    f"dataset.data_path={args.amazon_root}",
+                    f"dataset.train_file={os.path.join(args.data_root, f'D{train_d}', f'{args.dataset}_5_{args.time_range}.csv')}",
+                    f"dataset.valid_file={os.path.join(args.data_root, f'D{train_d}', f'{args.dataset}_5_{args.time_range}.csv')}",
+                    f"dataset.test_file={combined_test_file}",
+                    f"dataset.index_file={args.index_file}",
+                    f"test.batch_size={args.test_batch_size}",
+                    f"test.num_beams={args.num_beams}",
+                    f"test.max_new_tokens={args.max_new_tokens}",
+                    "test.filter_items=true",
+                    "test.log_pkm_heatmap=true",
+                    f"test.logging_dir={str(combined_tb_dir)}",
+                ] + t5_overrides
+
+                rc3 = run_cmd(cmd_test_all, env=env_base, log_path=combined_test_log)
+                if rc3 != 0:
+                    failed = True
+                    append_jsonl(status_jsonl, {"created_at": utc_now(), "status": "failed", "run_tag": run_tag, "phase": f"test_allgroups_D{train_d}_to_D{test_d}", "returncode": rc3})
                 else:
-                    append_jsonl(status_jsonl, {"created_at": utc_now(), "status": "tb_png_missing", "run_tag": run_tag, "phase": f"test_{group_name}_D{train_d}_to_D{test_d}", "tb_dir": str(tb_dir)})
+                    combined_png_dir = combined_tb_dir / "png"
+                    combined_saved = export_tb_images(combined_tb_dir, combined_png_dir, tag_prefix="PKM/", last_k=1, stride=1)
+                    if combined_saved:
+                        append_jsonl(
+                            status_jsonl,
+                            {
+                                "created_at": utc_now(),
+                                "status": "tb_png_saved",
+                                "run_tag": run_tag,
+                                "phase": f"test_allgroups_D{train_d}_to_D{test_d}",
+                                "tb_dir": str(combined_tb_dir),
+                                "png_dir": str(combined_png_dir),
+                                "png_count": len(combined_saved),
+                                "png_last": combined_saved[-1],
+                            },
+                        )
+                    else:
+                        append_jsonl(status_jsonl, {"created_at": utc_now(), "status": "tb_png_missing", "run_tag": run_tag, "phase": f"test_allgroups_D{train_d}_to_D{test_d}", "tb_dir": str(combined_tb_dir)})
 
             if failed:
                 break

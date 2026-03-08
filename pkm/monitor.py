@@ -29,10 +29,11 @@ class PKMMonitor:
              cls._counts = torch.zeros((cls._n_groups, cls._n_keys), dtype=torch.float32, device=cls._device)
 
     @classmethod
-    def update(cls, group_ids, indices, batch_size, seq_len):
+    def update(cls, group_ids, indices, batch_size, seq_len, scores=None):
         """
         group_ids: [Batch]
         indices: [Batch*SeqLen, Heads, TopK]
+        scores:  [Batch*SeqLen, Heads, TopK] (optional)
         """
         if not cls._enabled or cls._counts is None:
             return
@@ -52,6 +53,13 @@ class PKMMonitor:
             return 
             
         indices = indices.view(B, T, -1) # [B, T, H*K]
+        if scores is not None:
+            if scores.device != cls._counts.device:
+                scores = scores.to(cls._counts.device)
+            if scores.shape[0] != B * T:
+                scores = None
+            else:
+                scores = scores.view(B, T, -1)
         
         # 2. Expand group_ids: [B] -> [B, T, H*K]
         # Only valid groups (>=0)
@@ -67,9 +75,16 @@ class PKMMonitor:
         # [B_valid, 1, 1] -> [B_valid, T, H*K]
         groups_expanded = group_ids.view(-1, 1, 1).expand_as(indices)
         
-        # 3. Flatten
         g_flat = groups_expanded.reshape(-1)
         i_flat = indices.reshape(-1)
+
+        if scores is not None:
+            s_flat = scores[valid_mask].reshape(-1)
+            keep = torch.isfinite(s_flat) & (s_flat > -1e8)
+            if not keep.any():
+                return
+            g_flat = g_flat[keep]
+            i_flat = i_flat[keep]
         
         # 4. Accumulate
         # We want counts[g, i] += 1

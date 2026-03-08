@@ -311,17 +311,21 @@ def test(cfg):
     # Initialize PKM Monitor
     PKMMonitor.init(device=device)
 
-    # Initialize TensorBoard Writer
-    test_logging_dir = getattr(cfg.test, "logging_dir", None)
-    if test_logging_dir:
-        test_log_dir = os.path.expandvars(os.path.expanduser(str(test_logging_dir)))
-    else:
-        test_run_name = f"test_{os.path.basename(str(cfg.model.ckpt_path))}"
-        test_log_dir = os.path.join("runs", "test", test_run_name)
+    log_pkm_heatmap = bool(getattr(cfg.test, "log_pkm_heatmap", True))
 
-    os.makedirs(test_log_dir, exist_ok=True)
-    writer = SummaryWriter(log_dir=test_log_dir)
-    print(f"Test logs will be saved to {test_log_dir}")
+    writer = None
+    test_log_dir = None
+    if log_pkm_heatmap:
+        test_logging_dir = getattr(cfg.test, "logging_dir", None)
+        if test_logging_dir:
+            test_log_dir = os.path.expandvars(os.path.expanduser(str(test_logging_dir)))
+        else:
+            test_run_name = f"test_{os.path.basename(str(cfg.model.ckpt_path))}"
+            test_log_dir = os.path.join("runs", "test", test_run_name)
+
+        os.makedirs(test_log_dir, exist_ok=True)
+        writer = SummaryWriter(log_dir=test_log_dir)
+        print(f"Test logs will be saved to {test_log_dir}")
 
     with torch.no_grad():
         all_pred_list = []
@@ -385,17 +389,19 @@ def test(cfg):
             all_pred_list.extend(topk_res)
             all_gold_list.extend(targets)
 
-        # Log PKM Activation Heatmap
-        data = PKMMonitor.get_and_reset()
-        if data is not None:
-            try:
-                fig = PKMMonitor.plot_heatmap(data)
-                writer.add_figure("PKM/Test_Activation", fig, global_step=0)
-                plt.close(fig)
-                print("Logged PKM Activation Heatmap to TensorBoard")
-            except Exception as e:
-                print(f"Failed to plot heatmap: {e}")
-        writer.close()
+        if log_pkm_heatmap and writer is not None:
+            data = PKMMonitor.get_and_reset()
+            if data is not None:
+                try:
+                    fig = PKMMonitor.plot_heatmap(data)
+                    writer.add_figure("PKM/Test_Activation", fig, global_step=0)
+                    plt.close(fig)
+                    print("Logged PKM Activation Heatmap to TensorBoard")
+                except Exception as e:
+                    print(f"Failed to plot heatmap: {e}")
+            writer.close()
+        else:
+            PKMMonitor.reset()
 
         test_results = computeTopNAccuracy(all_gold_list, all_pred_list, topN=[5, 10, 20])
         print("=== End ===")

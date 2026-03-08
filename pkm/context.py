@@ -30,4 +30,8 @@ class PKMContext:
 
     @classmethod
     def set_training(cls, mode):
-        cls._is_training = mode
+        cls._is_training = bool(mode)
+
+    @classmethod
+    def is_training(cls):
+        return bool(cls._is_training)

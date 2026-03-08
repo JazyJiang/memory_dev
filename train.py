@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 from omegaconf import OmegaConf
 from transformers import T5Config, T5ForConditionalGeneration, T5Tokenizer
 from transformers.integrations import TensorBoardCallback
+from torch.utils.tensorboard import SummaryWriter
 
 from collator import Collator
 from models.decoder_only import DecoderOnlyConfig, DecoderOnlyForCausalLM
@@ -329,57 +330,61 @@ class PKMEpochCallback(transformers.TrainerCallback):
     def __init__(self):
         super().__init__()
         self.trainer = None
+        self._writer = None
 
-    def _get_tb_writer(self):
-        t = getattr(self, "trainer", None)
-        if t is None:
+    def _ensure_writer(self, args):
+        if self._writer is not None:
+            return self._writer
+        log_dir = getattr(args, "logging_dir", None)
+        if not log_dir:
             return None
-        handler = getattr(t, "callback_handler", None)
-        callbacks = getattr(handler, "callbacks", None)
-        if not callbacks:
-            return None
-        for cb in callbacks:
-            if isinstance(cb, TensorBoardCallback):
-                w = getattr(cb, "tb_writer", None)
-                if w is None:
-                    w = getattr(cb, "_tb_writer", None)
-                if w is None:
-                    w = getattr(cb, "writer", None)
-                return w
-        return None
+        self._writer = SummaryWriter(log_dir=str(log_dir))
+        return self._writer
 
     def on_epoch_begin(self, args, state, control, **kwargs):
         PKMContext.set_training(True)
         PKMContext.set_epoch(int(state.epoch))
+        PKMMonitor.reset()
         if state.is_world_process_zero:
             print(f"PKMContext: Epoch {PKMContext.get_epoch()}, Warmup? {PKMContext.is_warmup()}")
 
     def on_train_begin(self, args, state, control, **kwargs):
         PKMContext.set_training(True)
         PKMMonitor.init(device=args.device)
+        if state.is_world_process_zero:
+            self._ensure_writer(args)
 
-    def on_step_begin(self, args, state, control, **kwargs):
-        PKMContext.set_training(True)
+    def on_epoch_end(self, args, state, control, **kwargs):
+        data = PKMMonitor.get_and_reset()
 
-    def on_prediction_step(self, args, state, control, **kwargs):
-        PKMContext.set_training(False)
-
-    def on_log(self, args, state, control, logs=None, **kwargs):
         if not state.is_world_process_zero:
             return
-        writer = self._get_tb_writer()
-        if writer is None:
-            return
-        data = PKMMonitor.get_and_reset()
         if data is None:
             return
-        if getattr(data, "sum", None) is not None and data.sum() <= 0:
+
+        num_epochs = int(getattr(args, "num_train_epochs", 0) or 0)
+        raw_epoch = getattr(state, "epoch", 0) or 0
+        try:
+            epoch_idx = int(raw_epoch) - 1
+        except Exception:
+            epoch_idx = 0
+        epoch_idx = max(0, epoch_idx)
+        if num_epochs > 0:
+            epoch_idx = max(0, min(epoch_idx, num_epochs - 1))
+
+        try:
+            total = float(data.sum())
+        except Exception:
+            total = -1.0
+        print(f"PKM Train_Activation_Epoch: epoch={epoch_idx} raw_epoch={raw_epoch} total={total}")
+
+        writer = self._ensure_writer(args)
+        if writer is None:
             return
 
         try:
             fig = PKMMonitor.plot_heatmap(data)
-            step = int(getattr(state, "global_step", 0) or 0)
-            writer.add_figure("PKM/Train_Activation", fig, global_step=step)
+            writer.add_figure("PKM/Train_Activation_Epoch", fig, global_step=epoch_idx)
             writer.flush()
             plt.close(fig)
         except Exception:
@@ -388,11 +393,15 @@ class PKMEpochCallback(transformers.TrainerCallback):
             except Exception:
                 pass
 
-    def on_evaluate(self, args, state, control, **kwargs):
-        PKMContext.set_training(True)
+    def on_train_end(self, args, state, control, **kwargs):
+        if self._writer is not None:
+            try:
+                self._writer.flush()
+                self._writer.close()
+            except Exception:
+                pass
+            self._writer = None
 
-    def on_predict(self, args, state, control, **kwargs):
-        PKMContext.set_training(False)
 
 def train_t5_seq2seq(cfg) -> None:
     set_seed(int(cfg["global"].seed))
@@ -446,9 +455,9 @@ def train_t5_seq2seq(cfg) -> None:
         model.is_parallelizable = True
         model.model_parallel = True
 
-    # Monkey patch forward to capture group_ids
     original_forward = model.forward
     def forward_with_context(*args, **kwargs):
+        PKMContext.set_training(bool(getattr(model, "training", True)))
         if "group_ids" in kwargs:
             PKMContext.set_group_ids(kwargs.pop("group_ids"))
         kwargs.pop("num_items_in_batch", None)
