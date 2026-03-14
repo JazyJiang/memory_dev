@@ -70,13 +70,17 @@ def infer_runner_defaults(sweep: Dict[str, Any]) -> Dict[str, Any]:
 
     enc_layers = pkm_t5.get("pk_encoder_layers", "")
     dec_layers = pkm_t5.get("pk_decoder_layers", "2")
-    n_keys = pkm_t5.get("pk_mem_n_keys", 128)
-    knn = pkm_t5.get("pk_mem_knn", 16)
-    topk = pkm_t5.get("pk_topk", 8)
 
     sweep_params = sweep.get("sweep_params") if isinstance(sweep.get("sweep_params"), dict) else {}
     d0_warmups = normalize_list(sweep_params.get("d0_warmup_epochs", [0, 10]))
     ft_warmups = normalize_list(sweep_params.get("finetune_warmup_epochs", [10]))
+
+    # memory_configs: list of {n_keys, knn, topk}; fallback to single config from pkm section
+    raw_mem_cfgs = sweep_params.get("memory_configs", None)
+    if raw_mem_cfgs:
+        mem_cfgs = [{"n_keys": int(c["n_keys"]), "knn": int(c["knn"]), "topk": int(c["topk"])} for c in raw_mem_cfgs]
+    else:
+        mem_cfgs = [{"n_keys": int(pkm_t5.get("pk_mem_n_keys", 128)), "knn": int(pkm_t5.get("pk_mem_knn", 32)), "topk": int(pkm_t5.get("pk_topk", 8))}]
 
     out = {
         "strategy": strategy,
@@ -91,11 +95,9 @@ def infer_runner_defaults(sweep: Dict[str, Any]) -> Dict[str, Any]:
         "pkm.t5_seq2seq.pk_is_enabled": True,
         "pkm.t5_seq2seq.pk_encoder_layers": str(enc_layers),
         "pkm.t5_seq2seq.pk_decoder_layers": str(dec_layers),
-        "pkm.t5_seq2seq.pk_mem_n_keys": int(n_keys),
-        "pkm.t5_seq2seq.pk_mem_knn": int(knn),
-        "pkm.t5_seq2seq.pk_topk": int(topk),
         "sweep.d0_warmup_epochs": [int(x) for x in d0_warmups],
         "sweep.finetune_warmup_epochs": [int(x) for x in ft_warmups],
+        "sweep.memory_configs": mem_cfgs,
     })
 
     return out
@@ -104,12 +106,17 @@ def infer_runner_defaults(sweep: Dict[str, Any]) -> Dict[str, Any]:
 def iter_warmup_grid(base: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
     d0s = base["sweep.d0_warmup_epochs"]
     fts = base["sweep.finetune_warmup_epochs"]
+    mem_cfgs = base["sweep.memory_configs"]
     for d0 in d0s:
         for ft in fts:
-            out = dict(base)
-            out["sweep.d0_warmup_epochs"] = int(d0)
-            out["sweep.finetune_warmup_epochs"] = int(ft)
-            yield out
+            for mem_cfg in mem_cfgs:
+                out = dict(base)
+                out["sweep.d0_warmup_epochs"] = int(d0)
+                out["sweep.finetune_warmup_epochs"] = int(ft)
+                out["pkm.t5_seq2seq.pk_mem_n_keys"] = int(mem_cfg["n_keys"])
+                out["pkm.t5_seq2seq.pk_mem_knn"] = int(mem_cfg["knn"])
+                out["pkm.t5_seq2seq.pk_topk"] = int(mem_cfg["topk"])
+                yield out
 
 
 def key_for_resume(params: Dict[str, Any]) -> str:
@@ -120,6 +127,7 @@ def key_for_resume(params: Dict[str, Any]) -> str:
         "pkm.t5_seq2seq.pk_encoder_layers": params.get("pkm.t5_seq2seq.pk_encoder_layers"),
         "pkm.t5_seq2seq.pk_decoder_layers": params.get("pkm.t5_seq2seq.pk_decoder_layers"),
         "pkm.t5_seq2seq.pk_mem_n_keys": params.get("pkm.t5_seq2seq.pk_mem_n_keys"),
+        "pkm.t5_seq2seq.pk_mem_knn": params.get("pkm.t5_seq2seq.pk_mem_knn"),
         "pkm.t5_seq2seq.pk_topk": params.get("pkm.t5_seq2seq.pk_topk"),
         "sweep.d0_warmup_epochs": params.get("sweep.d0_warmup_epochs"),
         "sweep.finetune_warmup_epochs": params.get("sweep.finetune_warmup_epochs"),

@@ -9,13 +9,10 @@ train:
   batch_size: 512
   epochs: 50
 
-# PKM Fixed Configuration
+# PKM Fixed Configuration (used as fallback if memory_configs not set)
 pkm:
   t5_seq2seq:
     pk_is_enabled: true
-    pk_mem_n_keys: 30
-    pk_mem_knn: 6
-    pk_topk: 36
     pk_encoder_layers: ""
     pk_decoder_layers: "3"
 
@@ -23,6 +20,11 @@ pkm:
 # exp/forced-group-routing branch:
 # - warmup covers all epochs (d0=50, ft=50) so mask is always active during training
 # - test phase also applies mask via --force_routing_test flag
+# - memory_configs: each entry is (n_keys, knn, topk) where knn=n_keys/5, topk=knn^2
 sweep_params:
   d0_warmup_epochs: [50]
   finetune_warmup_epochs: [50]
+  memory_configs:
+    - {n_keys: 20, knn: 4, topk: 16}
+    - {n_keys: 30, knn: 6, topk: 36}
+    - {n_keys: 40, knn: 8, topk: 64}
