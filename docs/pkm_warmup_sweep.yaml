@@ -13,8 +13,7 @@ train:
 pkm:
   t5_seq2seq:
     pk_is_enabled: true
-    pk_mem_n_keys: 30
-    pk_mem_knn: 16
+    pk_mem_n_keys: 40
     pk_topk: 36
     pk_encoder_layers: ""
     pk_decoder_layers: "3"
