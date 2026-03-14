@@ -351,7 +351,8 @@ class HashingMemory(nn.Module):
         scores2 = torch.einsum("blh, lkh->blk", q2, keys2)
 
         # Warmup Logic: Mask scores based on group_ids
-        if self.training and PKMContext.is_warmup() and batch_size is not None and seq_len is not None:
+        # Triggers during warmup training epochs OR when force_routing is enabled (e.g. at test time)
+        if (PKMContext.is_warmup() or PKMContext.is_force_routing()) and batch_size is not None and seq_len is not None:
             group_ids = PKMContext.get_group_ids()
             if group_ids is not None:
                 # Ensure group_ids is on the same device

@@ -98,6 +98,7 @@ def _apply_test_defaults(cfg):
                 "max_new_tokens": 10,
                 "sample_num": -1,
                 "filter_items": False,
+                "pk_force_routing": False,
             },
             "pkm": {
                 "t5_seq2seq": {
@@ -310,6 +311,13 @@ def test(cfg):
 
     # Initialize PKM Monitor
     PKMMonitor.init(device=device)
+
+    # Force routing: apply group mask at test time
+    force_routing = bool(getattr(cfg.test, "pk_force_routing", False))
+    PKMContext.set_force_routing(force_routing)
+    PKMContext.set_training(False)
+    if force_routing:
+        print("PKMContext: force_routing=True, group mask will be applied at test time")
 
     log_pkm_heatmap = bool(getattr(cfg.test, "log_pkm_heatmap", True))
 

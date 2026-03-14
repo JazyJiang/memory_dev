@@ -71,6 +71,7 @@ def infer_runner_defaults(sweep: Dict[str, Any]) -> Dict[str, Any]:
     enc_layers = pkm_t5.get("pk_encoder_layers", "")
     dec_layers = pkm_t5.get("pk_decoder_layers", "2")
     n_keys = pkm_t5.get("pk_mem_n_keys", 128)
+    knn = pkm_t5.get("pk_mem_knn", 16)
     topk = pkm_t5.get("pk_topk", 8)
 
     sweep_params = sweep.get("sweep_params") if isinstance(sweep.get("sweep_params"), dict) else {}
@@ -91,6 +92,7 @@ def infer_runner_defaults(sweep: Dict[str, Any]) -> Dict[str, Any]:
         "pkm.t5_seq2seq.pk_encoder_layers": str(enc_layers),
         "pkm.t5_seq2seq.pk_decoder_layers": str(dec_layers),
         "pkm.t5_seq2seq.pk_mem_n_keys": int(n_keys),
+        "pkm.t5_seq2seq.pk_mem_knn": int(knn),
         "pkm.t5_seq2seq.pk_topk": int(topk),
         "sweep.d0_warmup_epochs": [int(x) for x in d0_warmups],
         "sweep.finetune_warmup_epochs": [int(x) for x in ft_warmups],
@@ -283,6 +285,7 @@ def main() -> None:
 
     ap.add_argument("--dry_run", action="store_true")
     ap.add_argument("--max_runs", type=int, default=None)
+    ap.add_argument("--force_routing_test", action="store_true", help="Apply group mask at test time (forced routing)")
 
     args = ap.parse_args()
 
@@ -419,6 +422,7 @@ def main() -> None:
             f"pkm.t5_seq2seq.pk_encoder_layers={params.get('pkm.t5_seq2seq.pk_encoder_layers','')}",
             f"pkm.t5_seq2seq.pk_decoder_layers={params.get('pkm.t5_seq2seq.pk_decoder_layers','')}",
             f"pkm.t5_seq2seq.pk_mem_n_keys={n_keys}",
+            f"pkm.t5_seq2seq.pk_mem_knn={int(params.get('pkm.t5_seq2seq.pk_mem_knn', 16))}",
             f"pkm.t5_seq2seq.pk_topk={topk}",
         ]
 
@@ -514,6 +518,7 @@ def main() -> None:
                     f"test.max_new_tokens={args.max_new_tokens}",
                     "test.filter_items=true",
                     "test.log_pkm_heatmap=false",
+                    f"test.pk_force_routing={'true' if args.force_routing_test else 'false'}",
                     f"test.logging_dir={str(run_log_root / f'D{train_d}' / 'test' / 'runs' / f'testD{test_d}_{group_name}')}",
                 ] + t5_overrides
 
@@ -550,6 +555,7 @@ def main() -> None:
                     f"test.max_new_tokens={args.max_new_tokens}",
                     "test.filter_items=true",
                     "test.log_pkm_heatmap=true",
+                    f"test.pk_force_routing={'true' if args.force_routing_test else 'false'}",
                     f"test.logging_dir={str(combined_tb_dir)}",
                 ] + t5_overrides
 

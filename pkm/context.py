@@ -3,6 +3,7 @@ class PKMContext:
     _current_epoch = 0
     _warmup_epochs = 0
     _is_training = True
+    _force_routing = False
 
     @classmethod
     def set_group_ids(cls, ids):
@@ -35,3 +36,11 @@ class PKMContext:
     @classmethod
     def is_training(cls):
         return bool(cls._is_training)
+
+    @classmethod
+    def set_force_routing(cls, enabled: bool):
+        cls._force_routing = bool(enabled)
+
+    @classmethod
+    def is_force_routing(cls):
+        return bool(cls._force_routing)
