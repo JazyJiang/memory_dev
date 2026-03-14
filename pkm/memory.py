@@ -110,8 +110,9 @@ class HashingMemory(nn.Module):
         if input_dim is None or output_dim is None:
             raise ValueError("HashingMemory requires input_dim/output_dim (or model_dim for backward-compat).")
 
-        if topk is not None:
-            mem_knn = int(topk)
+        # topk is now the final selection count (decoupled from intermediate mem_knn)
+        # For backward compat: if only topk is given (no mem_knn), topk also sets mem_knn
+        final_topk = int(topk) if topk is not None else None
         if mem_dim is not None:
             mem_v_dim = int(mem_dim)
         if use_gating is not None:
@@ -135,6 +136,7 @@ class HashingMemory(nn.Module):
         self.v_dim = int(mem_v_dim) if mem_v_dim > 0 else self.output_dim
         self.heads = int(mem_heads)
         self.knn = int(mem_knn)
+        self.final_topk = final_topk if final_topk is not None else self.knn
 
         self.mem_share_values = bool(mem_share_values)
         self.original = (not self.mem_share_values) or (HashingMemory.VALUES is None)
@@ -283,7 +285,7 @@ class HashingMemory(nn.Module):
         with torch.no_grad():
             p = scores.float().clamp_min(1e-9)
             ent = (-(p * p.log()).sum(dim=-1)).mean()
-            ent_norm = ent / math.log(float(self.knn)) if self.knn > 1 else ent
+            ent_norm = ent / math.log(float(self.final_topk)) if self.final_topk > 1 else ent
             uniq_ratio = float(indices.unique().numel()) / float(indices.numel())
             self._last_stats = {
                 "score_entropy": float(ent.item()),
@@ -292,8 +294,8 @@ class HashingMemory(nn.Module):
                 "score_max": float(scores.float().max().item()),
             }
 
-        indices = indices.view(bs, self.heads * self.knn)
-        scores = scores.view(bs, self.heads * self.knn)
+        indices = indices.view(bs, self.heads * self.final_topk)
+        scores = scores.view(bs, self.heads * self.final_topk)
 
         if not self.use_peer_variant:
             values_module = self.values if self.original else HashingMemory.VALUES
@@ -409,8 +411,8 @@ class HashingMemory(nn.Module):
             + indices2.view(bs, self.heads, 1, knn).expand(bs, self.heads, knn, knn)
         ).view(bs, self.heads, -1)
 
-        scores, best_indices = torch.topk(all_scores, k=knn, dim=2, largest=True, sorted=True)
+        scores, best_indices = torch.topk(all_scores, k=self.final_topk, dim=2, largest=True, sorted=True)
         indices = all_indices.gather(2, best_indices)
 
-        assert scores.shape == indices.shape == (bs, self.heads, knn)
-        return scores.view(bs * self.heads, knn), indices.view(bs * self.heads, knn)
+        assert scores.shape == indices.shape == (bs, self.heads, self.final_topk)
+        return scores.view(bs * self.heads, self.final_topk), indices.view(bs * self.heads, self.final_topk)
