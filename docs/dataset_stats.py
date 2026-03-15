@@ -105,13 +105,38 @@ def stats_for_period(t: int, data_root: str, dataset: str):
     # ── Test stats (per-group files) ───────────────────────────────────
     group_files = sorted(glob.glob(os.path.join(groups_dir, "*.csv")))
     if group_files:
+        # Build prev_interactions lookup for test users (from D{t-1} if available)
+        prev_lookup = None
+        if t > 0:
+            prev_csv = os.path.join(data_root, f"D{t-1}", f"{dataset}.csv")
+            if os.path.isfile(prev_csv):
+                prev_df = pd.read_csv(prev_csv)
+                prev_df["history_len"] = prev_df["history_item_id"].apply(count_history_length)
+                prev_lookup = (
+                    prev_df.groupby("user_id")["history_len"]
+                    .max()
+                    .rename("prev_interactions")
+                )
+
+        has_prev = prev_lookup is not None
         print(f"\n  [Test]   Group files found: {len(group_files)}")
-        print(f"  {'Group file':<30} {'Users':>10} {'Rows':>10}")
-        print(f"  {'-'*52}")
+        if has_prev:
+            print(f"  {'Group file':<30} {'Users':>8} {'Rows':>8} {'prev_med':>9} {'prev_mean':>10} {'prev_min':>9} {'prev_max':>9}")
+            print(f"  {'-'*77}")
+        else:
+            print(f"  {'Group file':<30} {'Users':>10} {'Rows':>10}")
+            print(f"  {'-'*52}")
+
         for gf in group_files:
             gdf = pd.read_csv(gf)
             fname = os.path.basename(gf)
-            print(f"  {fname:<30} {gdf['user_id'].nunique():>10,} {len(gdf):>10,}")
+            users = gdf["user_id"].nunique()
+            rows = len(gdf)
+            if has_prev:
+                pi = gdf["user_id"].map(prev_lookup).fillna(0)
+                print(f"  {fname:<30} {users:>8,} {rows:>8,} {pi.median():>9.1f} {pi.mean():>10.1f} {int(pi.min()):>9} {int(pi.max()):>9}")
+            else:
+                print(f"  {fname:<30} {users:>10,} {rows:>10,}")
     else:
         print(f"\n  [Test]   No group files found in: {groups_dir}")
 
