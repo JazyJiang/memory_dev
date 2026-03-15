@@ -118,25 +118,30 @@ def stats_for_period(t: int, data_root: str, dataset: str):
                     .rename("prev_interactions")
                 )
 
+        # Normalize index to str for safe user_id matching
+        if prev_lookup is not None:
+            prev_lookup = prev_lookup.copy()
+            prev_lookup.index = prev_lookup.index.astype(str)
+
         has_prev = prev_lookup is not None
         print(f"\n  [Test]   Group files found: {len(group_files)}")
         if has_prev:
-            print(f"  {'Group file':<30} {'Users':>8} {'Rows':>8} {'prev_med':>9} {'prev_mean':>10} {'prev_min':>9} {'prev_max':>9}")
-            print(f"  {'-'*77}")
+            print(f"  {'Group file':<30} {'Users':>8} {'Interactions':>14} {'prev_med':>9} {'prev_mean':>10} {'prev_min':>9} {'prev_max':>9}")
+            print(f"  {'-'*83}")
         else:
-            print(f"  {'Group file':<30} {'Users':>10} {'Rows':>10}")
-            print(f"  {'-'*52}")
+            print(f"  {'Group file':<30} {'Users':>8} {'Interactions':>14}")
+            print(f"  {'-'*54}")
 
         for gf in group_files:
             gdf = pd.read_csv(gf)
             fname = os.path.basename(gf)
             users = gdf["user_id"].nunique()
-            rows = len(gdf)
+            interactions = len(gdf)
             if has_prev:
-                pi = gdf["user_id"].map(prev_lookup).fillna(0)
-                print(f"  {fname:<30} {users:>8,} {rows:>8,} {pi.median():>9.1f} {pi.mean():>10.1f} {int(pi.min()):>9} {int(pi.max()):>9}")
+                pi = gdf["user_id"].astype(str).map(prev_lookup).fillna(0)
+                print(f"  {fname:<30} {users:>8,} {interactions:>14,} {pi.median():>9.1f} {pi.mean():>10.1f} {int(pi.min()):>9} {int(pi.max()):>9}")
             else:
-                print(f"  {fname:<30} {users:>10,} {rows:>10,}")
+                print(f"  {fname:<30} {users:>8,} {interactions:>14,}")
     else:
         print(f"\n  [Test]   No group files found in: {groups_dir}")
 
