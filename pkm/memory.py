@@ -360,6 +360,11 @@ class HashingMemory(nn.Module):
                 # Ensure group_ids is on the same device
                 if group_ids.device != scores1.device:
                     group_ids = group_ids.to(scores1.device)
+
+                # During beam search, batch_size = orig_batch * num_beams; expand group_ids accordingly
+                if group_ids.shape[0] != batch_size and batch_size % group_ids.shape[0] == 0:
+                    beam_width = batch_size // group_ids.shape[0]
+                    group_ids = group_ids.repeat_interleave(beam_width)
                 
                 # Calculate start/end indices for each group
                 # Assume 5 groups (0-4)
