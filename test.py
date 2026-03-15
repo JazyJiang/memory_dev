@@ -310,7 +310,8 @@ def test(cfg):
     model.eval()
 
     # Initialize PKM Monitor
-    PKMMonitor.init(device=device)
+    _pkm_n_keys = int(cfg.pkm.get("t5_seq2seq", {}).get("pk_mem_n_keys") or 128) if hasattr(cfg, "pkm") else 128
+    PKMMonitor.init(device=device, n_keys=_pkm_n_keys)
 
     # Force routing: apply group mask at test time
     force_routing = bool(getattr(cfg.test, "pk_force_routing", False))

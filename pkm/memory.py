@@ -396,7 +396,7 @@ class HashingMemory(nn.Module):
         scores1, indices1 = scores1.topk(knn, dim=2, largest=True)
         scores2, indices2 = scores2.topk(knn, dim=2, largest=True)
 
-        if batch_size is not None and PKMContext.is_training():
+        if batch_size is not None and (PKMContext.is_training() or PKMContext.is_force_routing()):
             group_ids = PKMContext.get_group_ids()
             if group_ids is not None:
                 if group_ids.shape[0] != batch_size:

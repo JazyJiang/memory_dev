@@ -143,7 +143,7 @@ class PKMMonitor:
             norm=PowerNorm(gamma=0.5, vmin=0.0, vmax=vmax),
             interpolation="nearest",
         )
-        ax.set_xlabel("Memory Keys (0-127)")
+        ax.set_xlabel(f"Memory Keys (0-{data.shape[1] - 1})")
         ax.set_ylabel("User Groups (0-4)")
         ax.set_title(f"Memory Activation Heatmap (Normalized per Group, vmax={vmax:.4g})")
         plt.colorbar(im, ax=ax)

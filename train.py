@@ -327,10 +327,11 @@ def _inject_pkm_into_t5_seq2seq(model: T5ForConditionalGeneration, cfg) -> None:
 
 
 class PKMEpochCallback(transformers.TrainerCallback):
-    def __init__(self):
+    def __init__(self, n_keys=128):
         super().__init__()
         self.trainer = None
         self._writer = None
+        self._n_keys = n_keys
 
     def _ensure_writer(self, args):
         if self._writer is not None:
@@ -350,7 +351,7 @@ class PKMEpochCallback(transformers.TrainerCallback):
 
     def on_train_begin(self, args, state, control, **kwargs):
         PKMContext.set_training(True)
-        PKMMonitor.init(device=args.device)
+        PKMMonitor.init(device=args.device, n_keys=self._n_keys)
         if state.is_world_process_zero:
             self._ensure_writer(args)
 
@@ -464,7 +465,8 @@ def train_t5_seq2seq(cfg) -> None:
         return original_forward(*args, **kwargs)
     model.forward = forward_with_context
 
-    monitor_callback = PKMEpochCallback()
+    _pkm_n_keys = int(cfg.pkm.get("t5_seq2seq", {}).get("pk_mem_n_keys") or 128) if hasattr(cfg, "pkm") else 128
+    monitor_callback = PKMEpochCallback(n_keys=_pkm_n_keys)
     trainer = transformers.Trainer(
         model=model,
         train_dataset=train_data,
