@@ -1,0 +1,26 @@
+# Full Retrain Sweep Configuration
+# Each stage trains from scratch on all data up to that point:
+#   D0           -> test D1
+#   D0+D1        -> test D2
+#   D0+D1+D2     -> test D3
+#   D0+D1+D2+D3  -> test D4
+#
+# Use --with_pkm flag to enable PKM memory layer.
+# Use --force_routing_test to apply group mask at test time (PKM only).
+
+strategy: t5_seq2seq
+
+train:
+  learning_rate: 1.0e-3
+  batch_size: 512
+  epochs: 50
+
+# PKM config (used only when --with_pkm is set)
+pkm:
+  t5_seq2seq:
+    pk_is_enabled: true
+    pk_encoder_layers: ""
+    pk_decoder_layers: "3"
+    pk_mem_n_keys: 125
+    pk_mem_knn: 25
+    pk_topk: 32
