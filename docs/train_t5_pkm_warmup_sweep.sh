@@ -75,8 +75,8 @@ HIST_TRUNC_LENS=${HIST_TRUNC_LENS:-"1 2 3 4 5 7 10"}
 HIST_TRUNC_RESULT_JSONL=${HIST_TRUNC_RESULT_JSONL:-./log/${DATASET}/sweep_t5_pkm_marker/hist_trunc_result.jsonl}
 
 # ── Exp 3: Prompt Temporal Marker ─────────────────────────────────────────
-# All three modes are swept in one run: none (baseline) / sep / tag
-MARKER_CANDIDATES=("none" "sep" "tag")
+# Baseline (none) already run in Exp 1; only sweep the two new modes
+MARKER_CANDIDATES=("sep" "tag")
 HIST_RECENT_K=${HIST_RECENT_K:-3}
 
 # -------------------------
@@ -102,8 +102,8 @@ DEC_TAG=$(sanitize_layers "${T5_PK_DECODER_LAYERS}")
 # -------------------------
 # Sweep Logic
 # -------------------------
-# D0 warmup: 0 = No Warmup (Baseline), 10 = Self-Group Warmup
-D0_WARMUP_CANDIDATES=(0 10)
+# D0_WARMUP fixed to 0 (no PKM warmup routing; not relevant for prompt eng exp)
+D0_WARMUP=0
 
 # cleanup_ckpt defined once; reads RUN_CKPT_ROOT dynamically at call time
 cleanup_ckpt() {
@@ -113,12 +113,11 @@ cleanup_ckpt() {
 }
 trap cleanup_ckpt EXIT
 
-echo "Starting Sweep: Markers=${MARKER_CANDIDATES[*]}, D0Warmup=${D0_WARMUP_CANDIDATES[*]}"
+echo "Starting Sweep: Markers=${MARKER_CANDIDATES[*]}"
 
 for HIST_TIME_MARKER in "${MARKER_CANDIDATES[@]}"; do
-for D0_WARMUP in "${D0_WARMUP_CANDIDATES[@]}"; do
     echo "========================================================"
-    echo "Running Experiment with D0_WARMUP = ${D0_WARMUP}"
+    echo "Running Experiment with HIST_TIME_MARKER = ${HIST_TIME_MARKER}"
     echo "========================================================"
 
     # Run Tag based on D0 Warmup
@@ -289,5 +288,4 @@ EOF
     fi
 
     cleanup_ckpt
-done  # D0_WARMUP
 done  # HIST_TIME_MARKER
