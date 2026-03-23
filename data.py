@@ -34,6 +34,8 @@ class BaseDataset(Dataset):
         self.his_sep = str(_cfg_get(dataset_cfg, "his_sep", ", "))
         self.index_file = str(_cfg_get(dataset_cfg, "index_file", "_index.json"))
         self.add_prefix = bool(_cfg_get(dataset_cfg, "add_prefix", False))
+        # test-time-only history truncation: keep last K items. -1 = no truncation.
+        self.test_max_his_len = int(_cfg_get(dataset_cfg, "test_max_his_len", -1))
 
         self.special_token_for_answer = _cfg_get(global_cfg, "special_token_for_answer", None)
 
@@ -512,6 +514,8 @@ class SeqRecDatasetCSV(BaseDataset):
                 group_id = int(self.test_group_id)
             else:
                 group_id = self.user_group_map.get(str(uid), 4)
+            if self.test_max_his_len > 0:
+                history = history[-self.test_max_his_len:]
             one_data = dict(item=[target], inters=self.prompt.format(history="".join(history)), group_id=group_id)
             inter_data.append(one_data)
         print(f"interaction in test: {len(inter_data)}")

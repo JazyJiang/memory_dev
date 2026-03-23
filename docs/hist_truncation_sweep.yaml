@@ -1,0 +1,58 @@
+# ── Exp 2: History Truncation Sweep ─────────────────────────────────────────
+# Tests whether keeping only the K most-recent history items at inference time
+# improves recall@20 for group 0 (most active, temporally heterogeneous users).
+#
+# Usage:
+#   CUDA_VISIBLE_DEVICES=0 python docs/run_hist_truncation_sweep.py --num_workers 4 --worker_id 0
+#   CUDA_VISIBLE_DEVICES=1 python docs/run_hist_truncation_sweep.py --num_workers 4 --worker_id 1
+#   CUDA_VISIBLE_DEVICES=2 python docs/run_hist_truncation_sweep.py --num_workers 4 --worker_id 2
+#   CUDA_VISIBLE_DEVICES=3 python docs/run_hist_truncation_sweep.py --num_workers 4 --worker_id 3
+
+# ── Checkpoint (fill in the path to your best PKM checkpoint) ────────────────
+ckpt_path: /mlx_devbox/users/zhuosong.jiang/playground/memory_dev/log/REPLACE_WITH_CKPT
+
+# ── If you want to test multiple checkpoints, use the 'checkpoints' list
+# checkpoints:
+#   - ckpt_path: /path/to/ckpt_A
+#     pk_mem_n_keys: 128
+#     pk_topk: 8
+#   - ckpt_path: /path/to/ckpt_B
+#     pk_mem_n_keys: 256
+#     pk_topk: 16
+
+# ── PKM params — must match the checkpoint ───────────────────────────────────
+pkm:
+  t5_pk_encoder_layers: ""
+  t5_pk_decoder_layers: "2"
+  pk_mem_n_keys: 128
+  pk_topk: 8
+  pk_mem_heads: 4
+  pk_mem_k_dim: 512
+  pk_mem_v_dim: -1
+  pk_mem_gated: 0
+  pk_mem_share_values: 0
+  pk_value_fixed_lr: 0.001
+  pk_is_enabled: "true"
+
+# ── Data config ──────────────────────────────────────────────────────────────
+dataset: Toys_and_Games
+data_root: /mlx_devbox/users/zhuosong.jiang/playground/memory_dev/data
+time_range: 2016-10-2018-11
+base_model: google-t5/t5-small
+index_file: .TIGER-index.json
+
+# Group-file path pattern. Placeholders: {data_root}, {period}, {group}
+group_file_pattern: "{data_root}/D{period}/groups/test_user_group{group}.csv"
+
+# ── Sweep dimensions ─────────────────────────────────────────────────────────
+# History lengths to test (-1 = no truncation, included implicitly by baseline)
+test_max_his_len: [1, 2, 3, 4, 5, 7, 10]
+
+# Periods to test (D1-D4 have per-group test files)
+periods: [1, 2, 3, 4]
+
+# User groups to test (1=most active/group0 in training map, 5=least active)
+groups: [1, 2, 3, 4, 5]
+
+# ── Output ───────────────────────────────────────────────────────────────────
+result_jsonl: ./log/hist_truncation/result.jsonl

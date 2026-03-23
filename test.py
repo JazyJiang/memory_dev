@@ -90,6 +90,7 @@ def _apply_test_defaults(cfg):
                 "train_file": None,
                 "valid_file": None,
                 "test_file": None,
+                "test_max_his_len": -1,  # -1 = no truncation; K>0 = keep most recent K items
             },
             "test": {
                 "task": "seqrec",
