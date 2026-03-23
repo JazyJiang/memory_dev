@@ -46,14 +46,14 @@ TEST_BATCH_SIZE=${TEST_BATCH_SIZE:-8}
 # -------------------------
 # Sweep Variables
 # -------------------------
-LR=${LR:-3e-4}
-BATCH_SIZE=${BATCH_SIZE:-256}
+LR=${LR:-1e-3}
+BATCH_SIZE=${BATCH_SIZE:-512}
 
 # PKM Params
 T5_PK_ENCODER_LAYERS=${T5_PK_ENCODER_LAYERS:-""}
-T5_PK_DECODER_LAYERS=${T5_PK_DECODER_LAYERS:-"2"}
+T5_PK_DECODER_LAYERS=${T5_PK_DECODER_LAYERS:-"3"}
 PK_MEM_N_KEYS=${PK_MEM_N_KEYS:-128}
-PK_TOPK=${PK_TOPK:-8}
+PK_TOPK=${PK_TOPK:-32}
 # PKM warmup disabled for all periods (not relevant for prompt marker exp)
 
 # Other PKM defaults
