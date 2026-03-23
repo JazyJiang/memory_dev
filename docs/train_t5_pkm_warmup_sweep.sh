@@ -67,12 +67,12 @@ T5_PK_VALUE_FIXED_LR=${T5_PK_VALUE_FIXED_LR:-0.001}
 T5_PK_VALUE_WEIGHT_DECAY=${T5_PK_VALUE_WEIGHT_DECAY:-0.0}
 
 CLEANUP_CKPT=${CLEANUP_CKPT:-1}
-RESULT_JSONL=${RESULT_JSONL:-./log/${DATASET}/sweep_t5_pkm_warmup/result.jsonl}
+RESULT_JSONL=${RESULT_JSONL:-./log/${DATASET}/sweep_t5_pkm_histtrunc/result.jsonl}
 
 # ── Exp 2: History Truncation ─────────────────────────────────────────────
 # Space-separated list of hist_len values to test. Set to "" to disable.
 HIST_TRUNC_LENS=${HIST_TRUNC_LENS:-"1 2 3 4 5 7 10"}
-HIST_TRUNC_RESULT_JSONL=${HIST_TRUNC_RESULT_JSONL:-./log/${DATASET}/sweep_t5_pkm_warmup/hist_trunc_result.jsonl}
+HIST_TRUNC_RESULT_JSONL=${HIST_TRUNC_RESULT_JSONL:-./log/${DATASET}/sweep_t5_pkm_histtrunc/hist_trunc_result.jsonl}
 
 # -------------------------
 # Logic
@@ -112,8 +112,8 @@ for D0_WARMUP in "${D0_WARMUP_CANDIDATES[@]}"; do
     # Run Tag based on D0 Warmup
     RUN_TAG="t5pkm_d0warmup${D0_WARMUP}_lr${LR}_bs${BATCH_SIZE}_dec${DEC_TAG}_nk${PK_MEM_N_KEYS}_topk${PK_TOPK}"
     LOCAL_CKPT_ROOT=${LOCAL_CKPT_ROOT:-/tmp/${USER}/memory_dev_ckpt}
-    RUN_CKPT_ROOT="${LOCAL_CKPT_ROOT}/ckpt/${DATASET}/sweep_t5_pkm_warmup/${RUN_TAG}"
-    RUN_LOG_ROOT="${CODE_ROOT}/log/${DATASET}/sweep_t5_pkm_warmup/${RUN_TAG}"
+    RUN_CKPT_ROOT="${LOCAL_CKPT_ROOT}/ckpt/${DATASET}/sweep_t5_pkm_histtrunc/${RUN_TAG}"
+    RUN_LOG_ROOT="${CODE_ROOT}/log/${DATASET}/sweep_t5_pkm_histtrunc/${RUN_TAG}"
     TRAIN_LOG_DIR="${RUN_LOG_ROOT}/train"
     TEST_LOG_DIR="${RUN_LOG_ROOT}/test"
 
