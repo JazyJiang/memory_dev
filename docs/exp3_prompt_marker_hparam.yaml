@@ -1,0 +1,27 @@
+# Exp 3: Prompt Temporal Marker — single fixed hyperparameter config
+# Usage:
+#   CUDA_VISIBLE_DEVICES=0 python docs/run_t5_pkm_sweep.py \
+#     --sweep_yaml docs/exp3_prompt_marker_hparam.yaml \
+#     --runner_sh docs/train_t5_pkm_warmup_sweep.sh
+
+strategy: t5_seq2seq
+
+train.learning_rate: 1.0e-3
+train.batch_size: 512
+
+pkm.t5_seq2seq.pk_is_enabled: true
+
+placement_pairs:
+  - {enc: "", dec: "3"}
+
+capacity_pairs:
+  - {n_keys: 128, topk: 32}
+
+pkm.t5_seq2seq.pk_mem_k_dim: 512
+pkm.t5_seq2seq.pk_mem_v_dim: -1
+
+pkm.t5_seq2seq.pk_value_fixed_lr: "tied"
+pkm.t5_seq2seq.pk_value_weight_decay: 0.0
+
+pkm.t5_seq2seq.pk_mem_gated: false
+pkm.t5_seq2seq.pk_mem_share_values: false
