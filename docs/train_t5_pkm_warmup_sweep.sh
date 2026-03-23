@@ -69,6 +69,11 @@ T5_PK_VALUE_WEIGHT_DECAY=${T5_PK_VALUE_WEIGHT_DECAY:-0.0}
 CLEANUP_CKPT=${CLEANUP_CKPT:-1}
 RESULT_JSONL=${RESULT_JSONL:-./log/${DATASET}/sweep_t5_pkm_warmup/result.jsonl}
 
+# ── Exp 2: History Truncation ─────────────────────────────────────────────
+# Space-separated list of hist_len values to test. Set to "" to disable.
+HIST_TRUNC_LENS=${HIST_TRUNC_LENS:-"1 2 3 4 5 7 10"}
+HIST_TRUNC_RESULT_JSONL=${HIST_TRUNC_RESULT_JSONL:-./log/${DATASET}/sweep_t5_pkm_warmup/hist_trunc_result.jsonl}
+
 # -------------------------
 # Logic
 # -------------------------
@@ -223,6 +228,38 @@ EOF
           "${T5_OVERRIDES[@]}" \
           > "${TEST_LOG}"
       done
+
+      # ── Exp 2: History Truncation Tests ─────────────────────────────────
+      # Run after baseline test, before moving to next period (ckpt still live).
+      if [[ -n "${HIST_TRUNC_LENS:-}" ]]; then
+        HIST_TRUNC_LOG_DIR="${RUN_LOG_ROOT}/hist_trunc"
+        mkdir -p "${HIST_TRUNC_LOG_DIR}"
+        for hist_len in ${HIST_TRUNC_LENS}; do
+          for group_file in "${GROUP_FILES[@]}"; do
+            group_name=$(basename "${group_file}" .csv)
+            HIST_LOG="${HIST_TRUNC_LOG_DIR}/${RUN_TAG}_trainD${train_d}_testD${test_d}_${group_name}_hlen${hist_len}.log"
+            python test.py \
+              config="${CONFIG_FILE}" \
+              "model.type=${TEST_MODEL_TYPE}" \
+              "global.gpu_id=0" \
+              "model.ckpt_path=${CUR_CKPT}" \
+              "model.tokenizer_path=${CUR_CKPT}" \
+              "model.base_model=${BASE_MODEL}" \
+              "dataset.name=${DATASET}" \
+              "dataset.data_path=${AMAZON_ROOT}" \
+              "dataset.test_file=${group_file}" \
+              "dataset.index_file=${INDEX_FILE}" \
+              "dataset.test_max_his_len=${hist_len}" \
+              "test.batch_size=${TEST_BATCH_SIZE}" \
+              "test.num_beams=${NUM_BEAMS}" \
+              "test.max_new_tokens=${MAX_NEW_TOKENS}" \
+              "test.filter_items=true" \
+              "train.model_max_length=${MODEL_MAX_LENGTH}" \
+              "${T5_OVERRIDES[@]}" \
+              > "${HIST_LOG}"
+          done
+        done
+      fi
     done
 
     # Result Collection
@@ -231,6 +268,16 @@ EOF
       --run_tag "${RUN_TAG}" \
       --test_log_glob "${TEST_LOG_DIR}/${RUN_TAG}_trainD*_testD*_*.log" \
       >> "${RESULT_JSONL}"
+
+    # Hist Truncation Result Collection
+    if [[ -n "${HIST_TRUNC_LENS:-}" ]]; then
+      mkdir -p "$(dirname "${HIST_TRUNC_RESULT_JSONL}")"
+      python "${CODE_ROOT}/docs/write_hist_trunc_result_jsonl.py" \
+        --params_json "${PARAMS_JSON}" \
+        --run_tag "${RUN_TAG}" \
+        --log_glob "${RUN_LOG_ROOT}/hist_trunc/${RUN_TAG}_trainD*_testD*_*_hlen*.log" \
+        >> "${HIST_TRUNC_RESULT_JSONL}"
+    fi
 
     cleanup_ckpt
 done
