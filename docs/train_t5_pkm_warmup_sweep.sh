@@ -98,16 +98,11 @@ DEC_TAG=$(sanitize_layers "${T5_PK_DECODER_LAYERS}")
 # Sweep Logic
 # -------------------------
 # Define the D0 warmup epochs to sweep: 
-# 0 = D0 No Warmup (Baseline)
-# 10 = D0 Self-Group Warmup (Proposed)
-D0_WARMUP_CANDIDATES=(0 10)
+# D0_WARMUP fixed to 0 (PKM warmup routing not relevant for hist truncation exp)
+D0_WARMUP=0
 
-echo "Starting Sweep for D0 Warmup Epochs: ${D0_WARMUP_CANDIDATES[*]}"
-
-for D0_WARMUP in "${D0_WARMUP_CANDIDATES[@]}"; do
-    echo "========================================================"
-    echo "Running Experiment with D0_WARMUP = ${D0_WARMUP}"
-    echo "========================================================"
+echo "Starting Hist Truncation Sweep"
+echo "========================================================"
 
     # Run Tag based on D0 Warmup
     RUN_TAG="t5pkm_d0warmup${D0_WARMUP}_lr${LR}_bs${BATCH_SIZE}_dec${DEC_TAG}_nk${PK_MEM_N_KEYS}_topk${PK_TOPK}"
@@ -279,5 +274,4 @@ EOF
         >> "${HIST_TRUNC_RESULT_JSONL}"
     fi
 
-    cleanup_ckpt
-done
+cleanup_ckpt
