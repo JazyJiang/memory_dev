@@ -54,8 +54,7 @@ T5_PK_ENCODER_LAYERS=${T5_PK_ENCODER_LAYERS:-""}
 T5_PK_DECODER_LAYERS=${T5_PK_DECODER_LAYERS:-"2"}
 PK_MEM_N_KEYS=${PK_MEM_N_KEYS:-128}
 PK_TOPK=${PK_TOPK:-8}
-PK_WARMUP_EPOCHS=${PK_WARMUP_EPOCHS:-10} # <--- NEW SWEEP VARIABLE
-FINETUNE_WARMUP_EPOCHS=${FINETUNE_WARMUP_EPOCHS:-10}
+# PKM warmup disabled for all periods (not relevant for hist truncation exp)
 
 # Other PKM defaults
 PK_MEM_HEADS=${PK_MEM_HEADS:-4}
@@ -157,15 +156,7 @@ EOF
     for train_d in 0 1 2 3; do
       test_d=$((train_d + 1))
 
-      # Determine Warmup Epochs for current phase
-      if [[ "${train_d}" == "0" ]]; then
-        CURRENT_WARMUP="${D0_WARMUP}"
-      else
-        CURRENT_WARMUP="${FINETUNE_WARMUP_EPOCHS}"
-      fi
-
-      # Add current warmup to overrides
-      T5_OVERRIDES=("${T5_OVERRIDES_BASE[@]}" "pkm.t5_seq2seq.pk_warmup_epochs=${CURRENT_WARMUP}")
+      T5_OVERRIDES=("${T5_OVERRIDES_BASE[@]}" "pkm.t5_seq2seq.pk_warmup_epochs=0")
 
       CUR_CKPT="${RUN_CKPT_ROOT}/D${train_d}"
       mkdir -p "${CUR_CKPT}"
