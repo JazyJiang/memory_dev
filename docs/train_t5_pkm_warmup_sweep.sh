@@ -74,6 +74,11 @@ RESULT_JSONL=${RESULT_JSONL:-./log/${DATASET}/sweep_t5_pkm_warmup/result.jsonl}
 HIST_TRUNC_LENS=${HIST_TRUNC_LENS:-"1 2 3 4 5 7 10"}
 HIST_TRUNC_RESULT_JSONL=${HIST_TRUNC_RESULT_JSONL:-./log/${DATASET}/sweep_t5_pkm_warmup/hist_trunc_result.jsonl}
 
+# ── Exp 3: Prompt Temporal Marker ─────────────────────────────────────────
+# "none" = disabled (default), "sep" = position-based separator, "tag" = timestamp tags
+HIST_TIME_MARKER=${HIST_TIME_MARKER:-"none"}
+HIST_RECENT_K=${HIST_RECENT_K:-3}
+
 # -------------------------
 # Logic
 # -------------------------
@@ -110,7 +115,7 @@ for D0_WARMUP in "${D0_WARMUP_CANDIDATES[@]}"; do
     echo "========================================================"
 
     # Run Tag based on D0 Warmup
-    RUN_TAG="t5pkm_d0warmup${D0_WARMUP}_lr${LR}_bs${BATCH_SIZE}_dec${DEC_TAG}_nk${PK_MEM_N_KEYS}_topk${PK_TOPK}"
+    RUN_TAG="t5pkm_d0warmup${D0_WARMUP}_lr${LR}_bs${BATCH_SIZE}_dec${DEC_TAG}_nk${PK_MEM_N_KEYS}_topk${PK_TOPK}_marker${HIST_TIME_MARKER}"
     LOCAL_CKPT_ROOT=${LOCAL_CKPT_ROOT:-/tmp/${USER}/memory_dev_ckpt}
     RUN_CKPT_ROOT="${LOCAL_CKPT_ROOT}/ckpt/${DATASET}/sweep_t5_pkm_warmup/${RUN_TAG}"
     RUN_LOG_ROOT="${CODE_ROOT}/log/${DATASET}/sweep_t5_pkm_warmup/${RUN_TAG}"
@@ -196,6 +201,8 @@ EOF
         "train.logging_step=1" \
         "train.save_and_eval_strategy=epoch" \
         "train.model_max_length=${MODEL_MAX_LENGTH}" \
+        "dataset.hist_time_marker=${HIST_TIME_MARKER}" \
+        "dataset.hist_recent_k=${HIST_RECENT_K}" \
         "${T5_OVERRIDES[@]}" \
         > "${TRAIN_LOG}"
 
@@ -225,6 +232,8 @@ EOF
           "test.max_new_tokens=${MAX_NEW_TOKENS}" \
           "test.filter_items=true" \
           "test.logging_dir=${RUN_LOG_ROOT}/D${train_d}/test/runs/testD${test_d}_${group_name}" \
+          "dataset.hist_time_marker=${HIST_TIME_MARKER}" \
+          "dataset.hist_recent_k=${HIST_RECENT_K}" \
           "${T5_OVERRIDES[@]}" \
           > "${TEST_LOG}"
       done

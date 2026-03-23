@@ -91,6 +91,8 @@ def _apply_test_defaults(cfg):
                 "valid_file": None,
                 "test_file": None,
                 "test_max_his_len": -1,  # -1 = no truncation; K>0 = keep most recent K items
+                "hist_time_marker": "none",  # "none" | "sep" | "tag"
+                "hist_recent_k": 3,          # used by "sep" mode
             },
             "test": {
                 "task": "seqrec",

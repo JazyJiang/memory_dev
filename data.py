@@ -360,6 +360,13 @@ class SeqRecDatasetCSV(BaseDataset):
         self.valid_file = _cfg_get(dataset_cfg, "valid_file", valid_file)
         self.test_file = _cfg_get(dataset_cfg, "test_file", test_file)
 
+        # Exp 3: temporal markers in prompt
+        # "none" : no markers (default)
+        # "sep"  : insert [RECENT] separator before the last hist_recent_k items (position-based)
+        # "tag"  : prepend each item with a relative-age tag [t1]..[t4] using history_timestamp
+        self.hist_time_marker = str(_cfg_get(dataset_cfg, "hist_time_marker", "none")).lower()
+        self.hist_recent_k = int(_cfg_get(dataset_cfg, "hist_recent_k", 3))
+
         self.test_group_id = self._infer_test_group_id()
         self.user_group_map = self._load_user_group_map()
 
@@ -461,6 +468,8 @@ class SeqRecDatasetCSV(BaseDataset):
     #       item remap
     # =====================
     def _remap_items(self):
+        need_ts = self.hist_time_marker == "tag"
+
         def remap_split(df):
             remap_dict = {}
             for index, row in df.iterrows():
@@ -468,7 +477,13 @@ class SeqRecDatasetCSV(BaseDataset):
                 history_ids = eval(row["history_item_id"])
                 target_code = "".join(self.indices[str(row["item_id"])])
                 history_code = ["".join(self.indices[str(i)]) for i in history_ids]
-                remap_dict[index] = [uid, history_code, target_code]
+                if need_ts:
+                    history_ts = [int(t) for t in eval(row["history_timestamp"])]
+                    target_ts = int(row.get("timestamp", 0))
+                else:
+                    history_ts = []
+                    target_ts = 0
+                remap_dict[index] = [uid, history_code, target_code, history_ts, target_ts]
             return remap_dict
 
         self.remapped_train = remap_split(self.train_data)
@@ -489,33 +504,78 @@ class SeqRecDatasetCSV(BaseDataset):
         return {"".join(self.indices[str(i)]) for i in cold_items}
 
     # =====================
+    #       temporal marker
+    # =====================
+    def _apply_time_markers(self, history, history_ts, target_ts):
+        """Optionally insert temporal markers into history token list.
+
+        "sep" mode: insert the literal string "[RECENT]" before the last
+            hist_recent_k items (position-based, no timestamps needed).
+        "tag" mode: prepend each item with [t1]..[t4] where t1=most recent,
+            t4=oldest, bucketed by relative age to the target timestamp.
+        """
+        if self.hist_time_marker == "none" or not history:
+            return history
+
+        if self.hist_time_marker == "sep":
+            k = min(self.hist_recent_k, len(history))
+            if k == 0 or k == len(history):
+                return history
+            return history[:-k] + ["[RECENT]"] + history[-k:]
+
+        if self.hist_time_marker == "tag":
+            if not history_ts or len(history_ts) != len(history) or target_ts == 0:
+                return history
+            ages = [max(0, target_ts - ts) for ts in history_ts]
+            max_age = max(ages) if max(ages) > 0 else 1
+            tagged = []
+            for item, age in zip(history, ages):
+                frac = age / max_age
+                if frac < 0.25:
+                    tag = "[t1]"
+                elif frac < 0.5:
+                    tag = "[t2]"
+                elif frac < 0.75:
+                    tag = "[t3]"
+                else:
+                    tag = "[t4]"
+                tagged.append(tag + item)
+            return tagged
+
+        return history
+
+    # =====================
     #       data pre-processing
     # =====================
     def _process_train_data(self):
         inter_data = []
-        for _, (uid, history, target) in self.remapped_train.items():
+        for _, (uid, history, target, history_ts, target_ts) in self.remapped_train.items():
             group_id = self.user_group_map.get(str(uid), 4)
+            history = self._apply_time_markers(history, history_ts, target_ts)
             one_data = dict(item=target, inters=self.prompt.format(history="".join(history)), group_id=group_id)
             inter_data.append(one_data)
         return inter_data
 
     def _process_valid_data(self):
         inter_data = []
-        for _, (uid, history, target) in self.remapped_valid.items():
+        for _, (uid, history, target, history_ts, target_ts) in self.remapped_valid.items():
             group_id = self.user_group_map.get(str(uid), 4)
+            history = self._apply_time_markers(history, history_ts, target_ts)
             one_data = dict(item=target, inters=self.prompt.format(history="".join(history)), group_id=group_id)
             inter_data.append(one_data)
         return inter_data
 
     def _process_test_data(self):
         inter_data = []
-        for _, (uid, history, target) in self.remapped_test.items():
+        for _, (uid, history, target, history_ts, target_ts) in self.remapped_test.items():
             if self.test_group_id is not None:
                 group_id = int(self.test_group_id)
             else:
                 group_id = self.user_group_map.get(str(uid), 4)
             if self.test_max_his_len > 0:
                 history = history[-self.test_max_his_len:]
+                history_ts = history_ts[-self.test_max_his_len:] if history_ts else history_ts
+            history = self._apply_time_markers(history, history_ts, target_ts)
             one_data = dict(item=[target], inters=self.prompt.format(history="".join(history)), group_id=group_id)
             inter_data.append(one_data)
         print(f"interaction in test: {len(inter_data)}")
@@ -526,7 +586,7 @@ class SeqRecDatasetCSV(BaseDataset):
     def _process_test_warm_data(self):
         inter_data = []
         warm_cnt = 0
-        for _, (uid, history, target) in self.remapped_test.items():
+        for _, (uid, history, target, history_ts, target_ts) in self.remapped_test.items():
             one_data = dict()
             if target in self.warm_items:
                 one_data["item"] = [target]
@@ -537,6 +597,7 @@ class SeqRecDatasetCSV(BaseDataset):
                 group_id = int(self.test_group_id)
             else:
                 group_id = self.user_group_map.get(str(uid), 4)
+            history = self._apply_time_markers(history, history_ts, target_ts)
             one_data["inters"] = self.prompt.format(history="".join(history))
             one_data["group_id"] = group_id
             inter_data.append(one_data)
@@ -546,7 +607,7 @@ class SeqRecDatasetCSV(BaseDataset):
     def _process_test_cold_data(self):
         inter_data = []
         cold_cnt = 0
-        for _, (uid, history, target) in self.remapped_test.items():
+        for _, (uid, history, target, history_ts, target_ts) in self.remapped_test.items():
             one_data = dict()
             if target in self.cold_items:
                 one_data["item"] = [target]
@@ -557,6 +618,7 @@ class SeqRecDatasetCSV(BaseDataset):
                 group_id = int(self.test_group_id)
             else:
                 group_id = self.user_group_map.get(str(uid), 4)
+            history = self._apply_time_markers(history, history_ts, target_ts)
             one_data["inters"] = self.prompt.format(history="".join(history))
             one_data["group_id"] = group_id
             inter_data.append(one_data)
