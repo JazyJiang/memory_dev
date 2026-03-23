@@ -10,11 +10,18 @@ Dataset statistics v2: deeper analysis for PKM forced-router diagnosis.
      → 各group中真正首次出现(new)的用户占比
   D. Item overlap across groups (Jaccard similarity)
      → 各group消费的item集合重叠度，高重叠=行为差异小=难以专门化keys
+  E. Prev-interactions distribution shape per group
+     → 各group的prev_interactions分位点，验证group边界是否有意义
+  F. Target item popularity per group (长尾分析)
+     → 核心问题：group0（最活跃用户）的next item是否更多是冷门/长尾item？
+     → 用全局item交互频次定义popularity，分析各group的target item popularity分布
+     → 若group0的target items更偏长尾 → recall@20低是item难度导致，而非模型对warm user表征差
 
 Usage:
   python docs/dataset_stats_v2.py
   python docs/dataset_stats_v2.py --data_root /path --dataset Toys_and_Games_5_2016-10-2018-11
-  python docs/dataset_stats_v2.py --modules A,B,C,D  # 只运行特定模块
+  python docs/dataset_stats_v2.py --modules F        # 只跑长尾分析
+  python docs/dataset_stats_v2.py --modules A,B,C,D,E,F
 """
 import argparse
 import ast
@@ -424,6 +431,133 @@ def module_E_prev_interactions_distribution(data_root, dataset, periods):
             )
 
 
+# ──────── Module F: target item popularity per group (长尾分析) ─────────────
+
+def module_F_target_item_popularity(data_root, dataset, periods):
+    """
+    核心问题：group 0（最活跃用户）的 next item 是否更多是冷门/长尾 item？
+
+    方法：
+    1. 用全量数据（D0-D4合并）计算每个 item_id 的全局交互频次，得到 popularity rank
+       - pop_pct: 0.0=最热门(头部), 1.0=最冷门(长尾)
+       - 长尾定义：pop_pct > 0.8（即全局频次排名后20%的item）
+    2. 对每个 period 和 group，分析 target item（item_id列）的 popularity 分布
+    3. 额外输出：各 group 的 target item 中 head/mid/tail 的占比
+
+    结论解读：
+    - 若 group0 的 tail_pct 显著高于其他 group → warm user 确实更多购买长尾item
+      → recall@20 低是任务难度导致，memory layer 应该向 item-side routing 设计
+    - 若各 group 的 tail_pct 相近 → 长尾不是主要原因，需要其他解释
+    """
+    print_section("Module F: Target Item Popularity per Group (长尾分析)")
+    print("  Global popularity computed across ALL periods (D0-D4)")
+    print("  pop_pct: 0.0=head(most popular), 1.0=tail(least popular)")
+    print("  Tail = pop_pct > 0.8 | Mid = 0.4~0.8 | Head = pop_pct <= 0.4")
+    print("  group idx: 0=most active user, 4=least active user")
+
+    # ── Step 1: compute global item popularity across all periods ──
+    all_dfs = []
+    for t in periods:
+        df = load_period_df(data_root, t, dataset)
+        if df is not None:
+            all_dfs.append(df[["item_id"]])
+
+    if not all_dfs:
+        print("  [SKIP] No data found")
+        return
+
+    combined = pd.concat(all_dfs, ignore_index=True)
+    item_freq = combined["item_id"].astype(str).value_counts().rename("global_freq")
+    n_items = len(item_freq)
+
+    # pop_rank: 1 = most popular; pop_pct: 0.0=head, 1.0=tail
+    item_pop_df = item_freq.reset_index()
+    item_pop_df.columns = ["item_id", "global_freq"]
+    item_pop_df = item_pop_df.sort_values("global_freq", ascending=False).reset_index(drop=True)
+    item_pop_df["pop_rank"] = item_pop_df.index + 1
+    item_pop_df["pop_pct"] = (item_pop_df["pop_rank"] - 1) / max(n_items - 1, 1)
+
+    pop_map = dict(zip(item_pop_df["item_id"], item_pop_df["pop_pct"]))
+    freq_map = dict(zip(item_pop_df["item_id"], item_pop_df["global_freq"]))
+
+    print(f"\n  Global item catalog: {n_items:,} unique items")
+    print(f"  Freq range: min={item_pop_df['global_freq'].min()}, "
+          f"median={item_pop_df['global_freq'].median():.0f}, "
+          f"max={item_pop_df['global_freq'].max()}")
+
+    # ── Step 2: per-period, per-group analysis ──
+    for t in periods:
+        df = load_period_df(data_root, t, dataset)
+        if df is None:
+            continue
+        gmap = load_group_map(os.path.join(data_root, f"D{t}"))
+        if gmap is None:
+            print(f"\n  D{t}: [SKIP] no user_group_map.json")
+            continue
+
+        df["group_idx"] = df["user_id"].astype(str).map(gmap)
+        df["item_str"] = df["item_id"].astype(str)
+        df["pop_pct"] = df["item_str"].map(pop_map)
+        df["global_freq"] = df["item_str"].map(freq_map)
+        df_valid = df.dropna(subset=["group_idx", "pop_pct"])
+
+        print(f"\n  D{t}  (rows with valid group+popularity: {len(df_valid):,}/{len(df):,})")
+        print(f"  {'Group':<8} {'n_rows':>8} {'pop_med':>8} {'pop_mean':>9} "
+              f"{'head%':>7} {'mid%':>7} {'tail%':>7} {'freq_med':>9}")
+        print(f"  {'-'*67}")
+
+        for g, gdf in df_valid.groupby("group_idx"):
+            pp = gdf["pop_pct"]
+            freq = gdf["global_freq"]
+            head_pct = (pp <= 0.4).mean() * 100
+            mid_pct  = ((pp > 0.4) & (pp <= 0.8)).mean() * 100
+            tail_pct = (pp > 0.8).mean() * 100
+            print(
+                f"  {int(g):<8} {len(gdf):>8,} {pp.median():>8.3f} {pp.mean():>9.3f} "
+                f"{head_pct:>6.1f}% {mid_pct:>6.1f}% {tail_pct:>6.1f}% {freq.median():>9.1f}"
+            )
+
+        # Overall for this period
+        pp_all = df_valid["pop_pct"]
+        freq_all = df_valid["global_freq"]
+        print(
+            f"  {'ALL':<8} {len(df_valid):>8,} {pp_all.median():>8.3f} {pp_all.mean():>9.3f} "
+            f"{(pp_all<=0.4).mean()*100:>6.1f}% "
+            f"{((pp_all>0.4)&(pp_all<=0.8)).mean()*100:>6.1f}% "
+            f"{(pp_all>0.8).mean()*100:>6.1f}% {freq_all.median():>9.1f}"
+        )
+
+    # ── Step 3: also check test group files ──
+    print(f"\n  ── Test group files (using same global popularity map) ──")
+    for t in periods:
+        groups_dir = os.path.join(data_root, f"D{t}", "groups")
+        group_files = sorted(glob.glob(os.path.join(groups_dir, "*.csv")))
+        if not group_files:
+            continue
+
+        print(f"\n  D{t} test groups:")
+        print(f"  {'File':<32} {'n_rows':>7} {'pop_med':>8} {'head%':>7} {'mid%':>7} {'tail%':>7} {'freq_med':>9}")
+        print(f"  {'-'*75}")
+
+        for gf in group_files:
+            gdf = pd.read_csv(gf)
+            gdf["item_str"] = gdf["item_id"].astype(str)
+            gdf["pop_pct"] = gdf["item_str"].map(pop_map)
+            gdf["global_freq"] = gdf["item_str"].map(freq_map)
+            gdf_v = gdf.dropna(subset=["pop_pct"])
+            if len(gdf_v) == 0:
+                continue
+            pp = gdf_v["pop_pct"]
+            freq = gdf_v["global_freq"]
+            fname = os.path.basename(gf)
+            print(
+                f"  {fname:<32} {len(gdf_v):>7,} {pp.median():>8.3f} "
+                f"{(pp<=0.4).mean()*100:>6.1f}% "
+                f"{((pp>0.4)&(pp<=0.8)).mean()*100:>6.1f}% "
+                f"{(pp>0.8).mean()*100:>6.1f}% {freq.median():>9.1f}"
+            )
+
+
 # ──────────────────────────────── main ──────────────────────────────────────
 
 def main():
@@ -436,8 +570,8 @@ def main():
         "DATASET_FILE", "Toys_and_Games_5_2016-10-2018-11"
     ))
     ap.add_argument("--periods", default="0,1,2,3,4")
-    ap.add_argument("--modules", default="orig,A,B,C,D,E",
-                    help="Comma-separated modules to run: orig,A,B,C,D,E")
+    ap.add_argument("--modules", default="orig,A,B,C,D,E,F",
+                    help="Comma-separated modules to run: orig,A,B,C,D,E,F")
     args = ap.parse_args()
 
     periods = [int(x) for x in args.periods.split(",")]
@@ -466,6 +600,9 @@ def main():
 
     if "E" in modules:
         module_E_prev_interactions_distribution(args.data_root, args.dataset, periods)
+
+    if "F" in modules:
+        module_F_target_item_popularity(args.data_root, args.dataset, periods)
 
     print(f"\n{'='*70}")
     print("  Done")
