@@ -233,6 +233,8 @@ EOF
               "model.base_model=${BASE_MODEL}" \
               "dataset.name=${DATASET}" \
               "dataset.data_path=${AMAZON_ROOT}" \
+              "dataset.train_file=${DATA_ROOT}/D${train_d}/${DATASET}_5_${TIME_RANGE}.csv" \
+              "dataset.valid_file=${DATA_ROOT}/D${train_d}/${DATASET}_5_${TIME_RANGE}.csv" \
               "dataset.test_file=${group_file}" \
               "dataset.index_file=${INDEX_FILE}" \
               "dataset.test_max_his_len=${hist_len}" \
