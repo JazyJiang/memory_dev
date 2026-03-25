@@ -70,7 +70,7 @@ RESULT_JSONL=${RESULT_JSONL:-./log/${DATASET}/sweep_t5_pkm_marker/result.jsonl}
 
 # ── Exp 2: History Truncation ─────────────────────────────────────────────
 # Space-separated list of hist_len values to test. Set to "" to disable.
-HIST_TRUNC_LENS=${HIST_TRUNC_LENS:-"1 2 3 4 5 7 10"}
+HIST_TRUNC_LENS=${HIST_TRUNC_LENS:-""}
 HIST_TRUNC_RESULT_JSONL=${HIST_TRUNC_RESULT_JSONL:-./log/${DATASET}/sweep_t5_pkm_marker/hist_trunc_result.jsonl}
 
 # ── Exp 3: Prompt Temporal Marker ─────────────────────────────────────────
