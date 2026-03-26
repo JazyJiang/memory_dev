@@ -222,6 +222,13 @@ def append_jsonl(path: Path, obj: Dict[str, Any]) -> None:
         f.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
 
+_ABLATION_KEY_MAP = {
+    "pk_is_enabled": "pkm.t5_seq2seq.pk_is_enabled",
+    "train_max_his_len": "dataset.train_max_his_len",
+    "test_max_his_len": "dataset.test_max_his_len",
+}
+
+
 def iter_grid(sweep: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
     ENC_KEY = "pkm.t5_seq2seq.pk_encoder_layers"
     DEC_KEY = "pkm.t5_seq2seq.pk_decoder_layers"
@@ -230,9 +237,11 @@ def iter_grid(sweep: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
     N_KEYS_KEY = "pkm.t5_seq2seq.pk_mem_n_keys"
     TOPK_KEY = "pkm.t5_seq2seq.pk_topk"
     CAPACITY_PAIRS_KEY = "capacity_pairs"
+    ABLATION_COMBOS_KEY = "ablation_combos"
 
     placement_pairs = sweep.get(PLACEMENT_PAIRS_KEY, None)
     capacity_pairs = sweep.get(CAPACITY_PAIRS_KEY, None)
+    ablation_combos = sweep.get(ABLATION_COMBOS_KEY, None)
 
     if placement_pairs is not None:
         for k in (ENC_KEY, DEC_KEY):
@@ -252,9 +261,14 @@ def iter_grid(sweep: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
                     f"to define linked (n_keys, topk) capacity pairs."
                 )
 
+    # Keys managed by ablation_combos should not be swept independently
+    ablation_managed_keys = set()
+    if ablation_combos is not None:
+        ablation_managed_keys = set(_ABLATION_KEY_MAP.values())
+
     fixed: Dict[str, Any] = {}
     for k, v in sweep.items():
-        if k in (PLACEMENT_PAIRS_KEY, CAPACITY_PAIRS_KEY):
+        if k in (PLACEMENT_PAIRS_KEY, CAPACITY_PAIRS_KEY, ABLATION_COMBOS_KEY):
             continue
         if not is_sweep_key(k):
             fixed[k] = v
@@ -262,12 +276,14 @@ def iter_grid(sweep: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
     keys: List[str] = []
     values: List[List[Any]] = []
     for sweep_key, sweep_values in sweep.items():
-        if sweep_key in (PLACEMENT_PAIRS_KEY, CAPACITY_PAIRS_KEY):
+        if sweep_key in (PLACEMENT_PAIRS_KEY, CAPACITY_PAIRS_KEY, ABLATION_COMBOS_KEY):
             continue
         if is_sweep_key(sweep_key):
             if placement_pairs is not None and sweep_key in (ENC_KEY, DEC_KEY):
                 continue
             if capacity_pairs is not None and sweep_key in (N_KEYS_KEY, TOPK_KEY):
+                continue
+            if sweep_key in ablation_managed_keys:
                 continue
             keys.append(sweep_key)
             values.append(normalize_value(sweep_values))
@@ -331,6 +347,17 @@ def iter_grid(sweep: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
                     out = dict(base)
                     out[N_KEYS_KEY] = n_keys
                     out[TOPK_KEY] = topk
+                    next_candidates.append(out)
+            candidates = next_candidates
+
+        if ablation_combos is not None:
+            next_candidates = []
+            for base in candidates:
+                for ac in ablation_combos:
+                    out = dict(base)
+                    for short_key, full_key in _ABLATION_KEY_MAP.items():
+                        if short_key in ac:
+                            out[full_key] = ac[short_key]
                     next_candidates.append(out)
             candidates = next_candidates
 
@@ -430,6 +457,12 @@ def main() -> None:
 
     if "capacity_pairs" in sweep:
         for k in ("pkm.t5_seq2seq.pk_mem_n_keys", "pkm.t5_seq2seq.pk_topk"):
+            if k not in sweep_keys:
+                sweep_keys.append(k)
+        sweep_keys = sorted(sweep_keys)
+
+    if "ablation_combos" in sweep:
+        for k in _ABLATION_KEY_MAP.values():
             if k not in sweep_keys:
                 sweep_keys.append(k)
         sweep_keys = sorted(sweep_keys)

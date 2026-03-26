@@ -5,9 +5,8 @@
 #     --sweep_yaml docs/exp_ablation_matrix.yaml \
 #     --runner_sh docs/train_t5_pkm_warmup_sweep.sh
 #
-# Produces 6 valid combos (train trunc + test full is auto-filtered):
-#   A1: pk=true,  trainH=-1, testH=-1   (PKM baseline)
-#   A2: pk=true,  trainH=-1, testH=2    (PKM + test trunc)
+# A1 (pk=true, full/full) and A2 (pk=true, full/trunc) already done.
+# Remaining 4 combos:
 #   A3: pk=true,  trainH=2,  testH=2    (PKM + train&test trunc)
 #   A4: pk=false, trainH=-1, testH=-1   (no-PKM baseline)
 #   A5: pk=false, trainH=-1, testH=2    (no-PKM + test trunc)
@@ -18,9 +17,6 @@ strategy: t5_seq2seq
 # Fixed training params (from pkm_warmup_sweep.yaml best config)
 train.learning_rate: 1.0e-3
 train.batch_size: 512
-
-# Sweep: PKM on/off
-pkm.t5_seq2seq.pk_is_enabled: [true, false]
 
 # Fixed PKM architecture (used when pk_is_enabled=true, ignored when false)
 placement_pairs:
@@ -36,8 +32,11 @@ pkm.t5_seq2seq.pk_value_weight_decay: 0.0
 pkm.t5_seq2seq.pk_mem_gated: false
 pkm.t5_seq2seq.pk_mem_share_values: false
 
-# Sweep: history truncation
-# -1 = full history, 2 = keep most recent 2 items
-dataset.train_max_his_len: [-1, 2]
-dataset.test_max_his_len: [-1, 2]
-# Note: combo (train=2, test=-1) is auto-skipped by validate_combo
+# ── Ablation combos (expressed as linked pairs) ──────────────────────────
+# Each entry is one (pk_is_enabled, train_max_his_len, test_max_his_len) combo.
+# Using ablation_combos to avoid invalid cartesian products.
+ablation_combos:
+  - {pk_is_enabled: true,  train_max_his_len: 2,  test_max_his_len: 2}   # A3
+  - {pk_is_enabled: false, train_max_his_len: -1, test_max_his_len: -1}  # A4
+  - {pk_is_enabled: false, train_max_his_len: -1, test_max_his_len: 2}   # A5
+  - {pk_is_enabled: false, train_max_his_len: 2,  test_max_his_len: 2}   # A6
