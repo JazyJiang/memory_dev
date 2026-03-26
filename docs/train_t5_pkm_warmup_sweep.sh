@@ -46,16 +46,15 @@ TEST_BATCH_SIZE=${TEST_BATCH_SIZE:-8}
 # -------------------------
 # Sweep Variables
 # -------------------------
-LR=${LR:-3e-4}
-BATCH_SIZE=${BATCH_SIZE:-256}
+LR=${LR:-1e-3}
+BATCH_SIZE=${BATCH_SIZE:-512}
 
 # PKM Params
 T5_PK_ENCODER_LAYERS=${T5_PK_ENCODER_LAYERS:-""}
-T5_PK_DECODER_LAYERS=${T5_PK_DECODER_LAYERS:-"2"}
+T5_PK_DECODER_LAYERS=${T5_PK_DECODER_LAYERS:-"3"}
 PK_MEM_N_KEYS=${PK_MEM_N_KEYS:-128}
-PK_TOPK=${PK_TOPK:-8}
-PK_WARMUP_EPOCHS=${PK_WARMUP_EPOCHS:-10} # <--- NEW SWEEP VARIABLE
-FINETUNE_WARMUP_EPOCHS=${FINETUNE_WARMUP_EPOCHS:-10}
+PK_TOPK=${PK_TOPK:-32}
+PK_IS_ENABLED=${PK_IS_ENABLED:-true}
 
 # Other PKM defaults
 PK_MEM_HEADS=${PK_MEM_HEADS:-4}
@@ -66,8 +65,12 @@ T5_PK_MEM_SHARE_VALUES=${T5_PK_MEM_SHARE_VALUES:-0}
 T5_PK_VALUE_FIXED_LR=${T5_PK_VALUE_FIXED_LR:-0.001}
 T5_PK_VALUE_WEIGHT_DECAY=${T5_PK_VALUE_WEIGHT_DECAY:-0.0}
 
+# History truncation (train / test)
+TRAIN_MAX_HIS_LEN=${TRAIN_MAX_HIS_LEN:--1}
+TEST_MAX_HIS_LEN=${TEST_MAX_HIS_LEN:--1}
+
 CLEANUP_CKPT=${CLEANUP_CKPT:-1}
-RESULT_JSONL=${RESULT_JSONL:-./log/${DATASET}/sweep_t5_pkm_warmup/result.jsonl}
+RESULT_JSONL=${RESULT_JSONL:-./log/${DATASET}/sweep_ablation/result.jsonl}
 
 # -------------------------
 # Logic
@@ -90,147 +93,134 @@ ENC_TAG=$(sanitize_layers "${T5_PK_ENCODER_LAYERS}")
 DEC_TAG=$(sanitize_layers "${T5_PK_DECODER_LAYERS}")
 
 # -------------------------
-# Sweep Logic
+# Run Tag — includes PKM on/off and trunc settings
 # -------------------------
-# Define the D0 warmup epochs to sweep: 
-# 0 = D0 No Warmup (Baseline)
-# 10 = D0 Self-Group Warmup (Proposed)
-D0_WARMUP_CANDIDATES=(0 10)
+RUN_TAG="t5_pkm${PK_IS_ENABLED}_lr${LR}_bs${BATCH_SIZE}_dec${DEC_TAG}_nk${PK_MEM_N_KEYS}_topk${PK_TOPK}_trainH${TRAIN_MAX_HIS_LEN}_testH${TEST_MAX_HIS_LEN}"
 
-echo "Starting Sweep for D0 Warmup Epochs: ${D0_WARMUP_CANDIDATES[*]}"
+LOCAL_CKPT_ROOT=${LOCAL_CKPT_ROOT:-/tmp/${USER}/memory_dev_ckpt}
+RUN_CKPT_ROOT="${LOCAL_CKPT_ROOT}/ckpt/${DATASET}/sweep_ablation/${RUN_TAG}"
+RUN_LOG_ROOT="${CODE_ROOT}/log/${DATASET}/sweep_ablation/${RUN_TAG}"
+TRAIN_LOG_DIR="${RUN_LOG_ROOT}/train"
+TEST_LOG_DIR="${RUN_LOG_ROOT}/test"
 
-for D0_WARMUP in "${D0_WARMUP_CANDIDATES[@]}"; do
-    echo "========================================================"
-    echo "Running Experiment with D0_WARMUP = ${D0_WARMUP}"
-    echo "========================================================"
+mkdir -p "${TRAIN_LOG_DIR}" "${TEST_LOG_DIR}"
+mkdir -p "$(dirname "${RESULT_JSONL}")"
 
-    # Run Tag based on D0 Warmup
-    RUN_TAG="t5pkm_d0warmup${D0_WARMUP}_lr${LR}_bs${BATCH_SIZE}_dec${DEC_TAG}_nk${PK_MEM_N_KEYS}_topk${PK_TOPK}"
-    LOCAL_CKPT_ROOT=${LOCAL_CKPT_ROOT:-/tmp/${USER}/memory_dev_ckpt}
-    RUN_CKPT_ROOT="${LOCAL_CKPT_ROOT}/ckpt/${DATASET}/sweep_t5_pkm_warmup/${RUN_TAG}"
-    RUN_LOG_ROOT="${CODE_ROOT}/log/${DATASET}/sweep_t5_pkm_warmup/${RUN_TAG}"
-    TRAIN_LOG_DIR="${RUN_LOG_ROOT}/train"
-    TEST_LOG_DIR="${RUN_LOG_ROOT}/test"
-
-    mkdir -p "${TRAIN_LOG_DIR}" "${TEST_LOG_DIR}"
-    mkdir -p "$(dirname "${RESULT_JSONL}")"
-
-    PARAMS_JSON="${RUN_LOG_ROOT}/params.json"
-    cat > "${PARAMS_JSON}" << EOF
+PARAMS_JSON="${RUN_LOG_ROOT}/params.json"
+cat > "${PARAMS_JSON}" << EOF
 {
   "dataset": "${DATASET}",
   "strategy": "${STRATEGY}",
   "run_tag": "${RUN_TAG}",
   "train.learning_rate": ${LR},
   "train.batch_size": ${BATCH_SIZE},
-  "pkm.d0_warmup_epochs": ${D0_WARMUP},
-  "pkm.n_keys": ${PK_MEM_N_KEYS}
+  "pkm.pk_is_enabled": "${PK_IS_ENABLED}",
+  "pkm.n_keys": ${PK_MEM_N_KEYS},
+  "pkm.topk": ${PK_TOPK},
+  "dataset.train_max_his_len": ${TRAIN_MAX_HIS_LEN},
+  "dataset.test_max_his_len": ${TEST_MAX_HIS_LEN}
 }
 EOF
 
-    # Base overrides without warmup
-    T5_OVERRIDES_BASE=(
-      "pkm.t5_seq2seq.pk_is_enabled=true"
-      "pkm.t5_seq2seq.pk_encoder_layers=${T5_PK_ENCODER_LAYERS}"
-      "pkm.t5_seq2seq.pk_decoder_layers=${T5_PK_DECODER_LAYERS}"
-      "pkm.t5_seq2seq.pk_mem_n_keys=${PK_MEM_N_KEYS}"
-      "pkm.t5_seq2seq.pk_mem_heads=${PK_MEM_HEADS}"
-      "pkm.t5_seq2seq.pk_mem_k_dim=${PK_MEM_K_DIM}"
-      "pkm.t5_seq2seq.pk_mem_v_dim=${PK_MEM_V_DIM}"
-      "pkm.t5_seq2seq.pk_topk=${PK_TOPK}"
-      "pkm.t5_seq2seq.pk_value_fixed_lr=${EFFECTIVE_PK_VALUE_LR}"
-      "pkm.t5_seq2seq.pk_value_weight_decay=${T5_PK_VALUE_WEIGHT_DECAY}"
-      "pkm.t5_seq2seq.pk_mem_gated=${PK_MEM_GATED_BOOL}"
-      "pkm.t5_seq2seq.pk_mem_share_values=${PK_MEM_SHARE_VALUES_BOOL}"
-    )
+T5_OVERRIDES=(
+  "pkm.t5_seq2seq.pk_is_enabled=${PK_IS_ENABLED}"
+  "pkm.t5_seq2seq.pk_encoder_layers=${T5_PK_ENCODER_LAYERS}"
+  "pkm.t5_seq2seq.pk_decoder_layers=${T5_PK_DECODER_LAYERS}"
+  "pkm.t5_seq2seq.pk_mem_n_keys=${PK_MEM_N_KEYS}"
+  "pkm.t5_seq2seq.pk_mem_heads=${PK_MEM_HEADS}"
+  "pkm.t5_seq2seq.pk_mem_k_dim=${PK_MEM_K_DIM}"
+  "pkm.t5_seq2seq.pk_mem_v_dim=${PK_MEM_V_DIM}"
+  "pkm.t5_seq2seq.pk_topk=${PK_TOPK}"
+  "pkm.t5_seq2seq.pk_value_fixed_lr=${EFFECTIVE_PK_VALUE_LR}"
+  "pkm.t5_seq2seq.pk_value_weight_decay=${T5_PK_VALUE_WEIGHT_DECAY}"
+  "pkm.t5_seq2seq.pk_mem_gated=${PK_MEM_GATED_BOOL}"
+  "pkm.t5_seq2seq.pk_mem_share_values=${PK_MEM_SHARE_VALUES_BOOL}"
+  "pkm.t5_seq2seq.pk_warmup_epochs=0"
+)
 
-    cleanup_ckpt() {
-      if [[ "${CLEANUP_CKPT}" == "1" ]]; then
-        rm -rf "${RUN_CKPT_ROOT}"
-      fi
-    }
-    trap cleanup_ckpt EXIT
+cleanup_ckpt() {
+  if [[ "${CLEANUP_CKPT}" == "1" ]]; then
+    rm -rf "${RUN_CKPT_ROOT}"
+  fi
+}
+trap cleanup_ckpt EXIT
 
-    ################################
-    # Train D0..D3, and test only next D
-    ################################
-    for train_d in 0 1 2 3; do
-      test_d=$((train_d + 1))
+echo "========================================================"
+echo "Ablation: PKM=${PK_IS_ENABLED} trainH=${TRAIN_MAX_HIS_LEN} testH=${TEST_MAX_HIS_LEN}"
+echo "RUN_TAG: ${RUN_TAG}"
+echo "========================================================"
 
-      # Determine Warmup Epochs for current phase
-      if [[ "${train_d}" == "0" ]]; then
-        CURRENT_WARMUP="${D0_WARMUP}"
-      else
-        CURRENT_WARMUP="${FINETUNE_WARMUP_EPOCHS}"
-      fi
+################################
+# Train D0..D3, and test only next D
+################################
+for train_d in 0 1 2 3; do
+  test_d=$((train_d + 1))
 
-      # Add current warmup to overrides
-      T5_OVERRIDES=("${T5_OVERRIDES_BASE[@]}" "pkm.t5_seq2seq.pk_warmup_epochs=${CURRENT_WARMUP}")
+  CUR_CKPT="${RUN_CKPT_ROOT}/D${train_d}"
+  mkdir -p "${CUR_CKPT}"
 
-      CUR_CKPT="${RUN_CKPT_ROOT}/D${train_d}"
-      mkdir -p "${CUR_CKPT}"
+  TRAIN_LOG="${TRAIN_LOG_DIR}/${RUN_TAG}_trainD${train_d}.log"
 
-      TRAIN_LOG="${TRAIN_LOG_DIR}/${RUN_TAG}_trainD${train_d}.log"
+  torchrun --nproc_per_node=1 --master_port=$((MASTER_PORT_BASE + train_d)) train.py \
+    config="${CONFIG_FILE}" \
+    "strategy=${STRATEGY}" \
+    "model.${STRATEGY}.base_model=${BASE_MODEL}" \
+    "train.output_dir=${CUR_CKPT}" \
+    "train.logging_dir=${RUN_LOG_ROOT}/D${train_d}/runs" \
+    "dataset.data_path=${AMAZON_ROOT}" \
+    "dataset.name=${DATASET}" \
+    "dataset.train_file=${DATA_ROOT}/D${train_d}/${DATASET}_5_${TIME_RANGE}.csv" \
+    "dataset.valid_file=${DATA_ROOT}/D${train_d}/${DATASET}_5_${TIME_RANGE}.csv" \
+    "dataset.test_file=${DATA_ROOT}/D${train_d}/${DATASET}_5_${TIME_RANGE}.csv" \
+    "dataset.index_file=${INDEX_FILE}" \
+    "dataset.train_max_his_len=${TRAIN_MAX_HIS_LEN}" \
+    "train.batch_size=${BATCH_SIZE}" \
+    "train.learning_rate=${LR}" \
+    "train.epochs=${EPOCHS}" \
+    "train.weight_decay=${WD}" \
+    "train.logging_step=1" \
+    "train.save_and_eval_strategy=epoch" \
+    "train.model_max_length=${MODEL_MAX_LENGTH}" \
+    "${T5_OVERRIDES[@]}" \
+    > "${TRAIN_LOG}"
 
-      torchrun --nproc_per_node=1 --master_port=$((MASTER_PORT_BASE + train_d + D0_WARMUP)) train.py \
-        config="${CONFIG_FILE}" \
-        "strategy=${STRATEGY}" \
-        "model.${STRATEGY}.base_model=${BASE_MODEL}" \
-        "train.output_dir=${CUR_CKPT}" \
-        "train.logging_dir=${RUN_LOG_ROOT}/D${train_d}/runs" \
-        "dataset.data_path=${AMAZON_ROOT}" \
-        "dataset.name=${DATASET}" \
-        "dataset.train_file=${DATA_ROOT}/D${train_d}/${DATASET}_5_${TIME_RANGE}.csv" \
-        "dataset.valid_file=${DATA_ROOT}/D${train_d}/${DATASET}_5_${TIME_RANGE}.csv" \
-        "dataset.test_file=${DATA_ROOT}/D${train_d}/${DATASET}_5_${TIME_RANGE}.csv" \
-        "dataset.index_file=${INDEX_FILE}" \
-        "train.batch_size=${BATCH_SIZE}" \
-        "train.learning_rate=${LR}" \
-        "train.epochs=${EPOCHS}" \
-        "train.weight_decay=${WD}" \
-        "train.logging_step=1" \
-        "train.save_and_eval_strategy=epoch" \
-        "train.model_max_length=${MODEL_MAX_LENGTH}" \
-        "${T5_OVERRIDES[@]}" \
-        > "${TRAIN_LOG}"
+  # Test Phase
+  GROUP_DIR="${DATA_ROOT}/D${test_d}/groups"
+  GROUP_FILES=("${GROUP_DIR}"/*.csv)
 
-      # Test Phase
-      GROUP_DIR="${DATA_ROOT}/D${test_d}/groups"
-      GROUP_FILES=("${GROUP_DIR}"/*.csv)
+  for group_file in "${GROUP_FILES[@]}"; do
+    group_name=$(basename "${group_file}" .csv)
+    TEST_LOG="${TEST_LOG_DIR}/${RUN_TAG}_trainD${train_d}_testD${test_d}_${group_name}.log"
 
-      for group_file in "${GROUP_FILES[@]}"; do
-        group_name=$(basename "${group_file}" .csv)
-        TEST_LOG="${TEST_LOG_DIR}/${RUN_TAG}_trainD${train_d}_testD${test_d}_${group_name}.log"
-
-        python test.py \
-          config="${CONFIG_FILE}" \
-          "model.type=${TEST_MODEL_TYPE}" \
-          "global.gpu_id=0" \
-          "model.ckpt_path=${CUR_CKPT}" \
-          "model.tokenizer_path=${CUR_CKPT}" \
-          "model.base_model=${BASE_MODEL}" \
-          "dataset.name=${DATASET}" \
-          "dataset.data_path=${AMAZON_ROOT}" \
-          "dataset.train_file=${DATA_ROOT}/D${train_d}/${DATASET}_5_${TIME_RANGE}.csv" \
-          "dataset.valid_file=${DATA_ROOT}/D${train_d}/${DATASET}_5_${TIME_RANGE}.csv" \
-          "dataset.test_file=${group_file}" \
-          "dataset.index_file=${INDEX_FILE}" \
-          "test.batch_size=${TEST_BATCH_SIZE}" \
-          "test.num_beams=${NUM_BEAMS}" \
-          "test.max_new_tokens=${MAX_NEW_TOKENS}" \
-          "test.filter_items=true" \
-          "test.logging_dir=${RUN_LOG_ROOT}/D${train_d}/test/runs/testD${test_d}_${group_name}" \
-          "${T5_OVERRIDES[@]}" \
-          > "${TEST_LOG}"
-      done
-    done
-
-    # Result Collection
-    python "${CODE_ROOT}/docs/write_result_jsonl.py" \
-      --params_json "${PARAMS_JSON}" \
-      --run_tag "${RUN_TAG}" \
-      --test_log_glob "${TEST_LOG_DIR}/${RUN_TAG}_trainD*_testD*_*.log" \
-      >> "${RESULT_JSONL}"
-
-    cleanup_ckpt
+    python test.py \
+      config="${CONFIG_FILE}" \
+      "model.type=${TEST_MODEL_TYPE}" \
+      "global.gpu_id=0" \
+      "model.ckpt_path=${CUR_CKPT}" \
+      "model.tokenizer_path=${CUR_CKPT}" \
+      "model.base_model=${BASE_MODEL}" \
+      "dataset.name=${DATASET}" \
+      "dataset.data_path=${AMAZON_ROOT}" \
+      "dataset.train_file=${DATA_ROOT}/D${train_d}/${DATASET}_5_${TIME_RANGE}.csv" \
+      "dataset.valid_file=${DATA_ROOT}/D${train_d}/${DATASET}_5_${TIME_RANGE}.csv" \
+      "dataset.test_file=${group_file}" \
+      "dataset.index_file=${INDEX_FILE}" \
+      "dataset.test_max_his_len=${TEST_MAX_HIS_LEN}" \
+      "test.batch_size=${TEST_BATCH_SIZE}" \
+      "test.num_beams=${NUM_BEAMS}" \
+      "test.max_new_tokens=${MAX_NEW_TOKENS}" \
+      "test.filter_items=true" \
+      "test.logging_dir=${RUN_LOG_ROOT}/D${train_d}/test/runs/testD${test_d}_${group_name}" \
+      "${T5_OVERRIDES[@]}" \
+      > "${TEST_LOG}"
+  done
 done
+
+# Result Collection
+python "${CODE_ROOT}/docs/write_result_jsonl.py" \
+  --params_json "${PARAMS_JSON}" \
+  --run_tag "${RUN_TAG}" \
+  --test_log_glob "${TEST_LOG_DIR}/${RUN_TAG}_trainD*_testD*_*.log" \
+  >> "${RESULT_JSONL}"
+
+cleanup_ckpt

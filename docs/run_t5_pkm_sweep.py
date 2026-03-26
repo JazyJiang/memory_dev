@@ -35,7 +35,7 @@ def load_yaml(path: Path) -> Dict[str, Any]:
 
 
 def is_sweep_key(k: str) -> bool:
-    return isinstance(k, str) and (k.startswith("train.") or k.startswith("pkm."))
+    return isinstance(k, str) and (k.startswith("train.") or k.startswith("pkm.") or k.startswith("dataset."))
 
 
 def normalize_value(v: Any) -> List[Any]:
@@ -61,9 +61,15 @@ def validate_combo(params: Dict[str, Any]) -> List[str]:
     if params.get("strategy") not in (None, "t5_seq2seq"):
         reasons.append(f"Unsupported strategy={params.get('strategy')!r}; expected 't5_seq2seq'")
 
-    # Always-on
-    if params.get("pkm.t5_seq2seq.pk_is_enabled") not in (True, "true", "True", 1, "1"):
-        reasons.append("pkm.t5_seq2seq.pk_is_enabled must be true in this sweep")
+    # PKM can now be disabled for ablation experiments
+    # (removed the always-on check)
+
+    # train_max_his_len > 0 but test_max_his_len == -1 is invalid
+    # (training with truncated history but testing with full history makes no sense)
+    train_h = int(params.get("dataset.train_max_his_len", -1))
+    test_h = int(params.get("dataset.test_max_his_len", -1))
+    if train_h > 0 and test_h < 0:
+        reasons.append(f"Invalid: train_max_his_len={train_h} but test_max_his_len={test_h} (train trunc + test full)")
 
     # topk vs n_keys constraint
     try:
@@ -180,6 +186,14 @@ def format_env(params: Dict[str, Any]) -> Dict[str, str]:
     # switches
     env["PK_MEM_GATED"] = as_env_bool(params["pkm.t5_seq2seq.pk_mem_gated"])
     env["T5_PK_MEM_SHARE_VALUES"] = as_env_bool(params["pkm.t5_seq2seq.pk_mem_share_values"])
+
+    # PKM enable toggle
+    pk_enabled = params.get("pkm.t5_seq2seq.pk_is_enabled", True)
+    env["PK_IS_ENABLED"] = "true" if pk_enabled in (True, "true", "True", 1, "1") else "false"
+
+    # history truncation
+    env["TRAIN_MAX_HIS_LEN"] = str(params.get("dataset.train_max_his_len", -1))
+    env["TEST_MAX_HIS_LEN"] = str(params.get("dataset.test_max_his_len", -1))
 
     # always clean ckpt for disk safety
     env["CLEANUP_CKPT"] = "1"

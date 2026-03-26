@@ -90,6 +90,8 @@ def _apply_test_defaults(cfg):
                 "train_file": None,
                 "valid_file": None,
                 "test_file": None,
+                "test_max_his_len": -1,
+                "train_max_his_len": -1,
             },
             "test": {
                 "task": "seqrec",
