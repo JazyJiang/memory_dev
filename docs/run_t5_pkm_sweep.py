@@ -489,12 +489,6 @@ def main() -> None:
     if args.num_workers > 1 and not args.shared_result_jsonl:
         sweep_status_jsonl = sweep_status_jsonl.with_name(f"sweep_status.worker{args.worker_id}.jsonl")
 
-    import hashlib
-
-    def _worker_for_sig(sig: str) -> int:
-        h = hashlib.md5(sig.encode("utf-8")).hexdigest()
-        return int(h[:8], 16) % args.num_workers
-
     total = 0
     valid = 0
     skipped = 0
@@ -506,11 +500,13 @@ def main() -> None:
     assigned_launched = 0
 
     for params in iter_grid(sweep):
-        total += 1
         sig = key_for_resume(params, sweep_keys)
 
-        if _worker_for_sig(sig) != args.worker_id:
+        # Round-robin assignment: combo index % num_workers
+        if total % args.num_workers != args.worker_id:
+            total += 1
             continue
+        total += 1
 
         assigned_total += 1
 
