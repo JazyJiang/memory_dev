@@ -90,6 +90,8 @@ def _apply_test_defaults(cfg):
                 "train_file": None,
                 "valid_file": None,
                 "test_file": None,
+                "test_max_his_len": -1,
+                "train_max_his_len": -1,
             },
             "test": {
                 "task": "seqrec",
@@ -98,6 +100,7 @@ def _apply_test_defaults(cfg):
                 "max_new_tokens": 10,
                 "sample_num": -1,
                 "filter_items": False,
+                "per_sample_jsonl": "",  # if non-empty, write per-sample hit results here
             },
             "pkm": {
                 "t5_seq2seq": {
@@ -406,6 +409,24 @@ def test(cfg):
         test_results = computeTopNAccuracy(all_gold_list, all_pred_list, topN=[5, 10, 20])
         print("=== End ===")
         print_results(None, None, test_results)
+
+        # Optional per-sample JSONL output (for delta-set analysis)
+        per_sample_jsonl = str(getattr(cfg.test, "per_sample_jsonl", "") or "").strip()
+        if per_sample_jsonl:
+            import json as _json
+            from pathlib import Path as _Path
+            _Path(per_sample_jsonl).parent.mkdir(parents=True, exist_ok=True)
+            topN_ks = [5, 10, 20]
+            with open(per_sample_jsonl, "w") as _f:
+                for _i, (_gold, _preds) in enumerate(zip(all_gold_list, all_pred_list)):
+                    _hits = {f"hit@{k}": any(p in _gold for p in _preds[:k]) for k in topN_ks}
+                    _f.write(_json.dumps({
+                        "row_idx": _i,
+                        "gold": _gold,
+                        "preds_top5": _preds[:5],
+                        **_hits,
+                    }, ensure_ascii=False) + "\n")
+            print(f"Per-sample predictions written to {per_sample_jsonl}")
 
 
 if __name__ == "__main__":
