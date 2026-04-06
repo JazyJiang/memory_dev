@@ -12,7 +12,7 @@ def count_history_length(history_str):
     except Exception:
         return 0
 
-def generate_user_group_map(data_root="/mlx_devbox/users/zhuosong.jiang/playground/memory_dev/data", dataset_name="Toys_and_Games_5_2016-10-2018-11", n_groups=5):
+def generate_user_group_map(data_root="/workspace/jiangzhuosong/memory_dev/data", dataset_name="Toys_and_Games_5_2016-10-2018-11", n_groups=5):
     # Process D0 (use current period interaction count)
     d0_path = os.path.join(data_root, "D0", f"{dataset_name}.csv")
     if os.path.exists(d0_path):

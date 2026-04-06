@@ -17,16 +17,16 @@ export WANDB_DISABLED=true
 export CUDA_LAUNCH_BLOCKING=1
 export CUDA_VISIBLE_DEVICES=0,1
 
-CODE_ROOT=/mlx_devbox/users/zhuosong.jiang/playground/memory_dev
+CODE_ROOT=/workspace/jiangzhuosong/memory_dev
 cd "${CODE_ROOT}"
 
 DATASET=Toys_and_Games
 
 # Set this to the directory produced by 0_process.py (the one containing D0/D1/D2/D3/D4).
-DATA_ROOT=/mlx_devbox/users/zhuosong.jiang/playground/memory_dev/data
+DATA_ROOT=/workspace/jiangzhuosong/memory_dev/data
 
 # Set this to the directory that contains data/info/${DATASET}.TIGER-index.json (i.e., the one containing the info/ subdir).
-AMAZON_ROOT=/mlx_devbox/users/zhuosong.jiang/playground/memory_dev/data
+AMAZON_ROOT=/workspace/jiangzhuosong/memory_dev/data
 
 # Tokenizer source for training/evaluation (decoder-only currently still uses T5Tokenizer).
 BASE_MODEL=google-t5/t5-small
