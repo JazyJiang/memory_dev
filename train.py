@@ -470,7 +470,7 @@ def train_t5_seq2seq(cfg) -> None:
         train_dataset=train_data,
         eval_dataset=valid_data,
         args=_build_training_arguments(cfg, ddp=ddp),
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         data_collator=collator,
         callbacks=[monitor_callback],
     )
@@ -648,7 +648,7 @@ def train_decoder_only(cfg) -> None:
         train_dataset=train_data,
         eval_dataset=valid_data,
         args=_build_training_arguments(cfg, ddp=ddp),
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         data_collator=collator,
         optimizers=(optimizer, None),
         callbacks=[PKMDiagnosticsCallback()],
