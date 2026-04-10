@@ -429,11 +429,17 @@ def test(cfg):
             with open(per_sample_jsonl, "w") as _f:
                 for _i, (_gold, _preds) in enumerate(zip(all_gold_list, all_pred_list)):
                     _hits = {f"hit@{k}": any(p in _gold for p in _preds[:k]) for k in topN_ks}
+                    _meta = test_data.inter_data[_i] if _i < len(test_data.inter_data) else {}
                     _f.write(_json.dumps({
                         "row_idx": _i,
                         "gold": _gold,
                         "preds_top5": _preds[:5],
+                        "preds_top10": _preds[:10],
+                        "preds_top20": _preds[:20],
                         **_hits,
+                        "group_id": _meta.get("group_id", -1),
+                        "target_title": _meta.get("target_title", ""),
+                        "history_titles": _meta.get("history_titles", []),
                     }, ensure_ascii=False) + "\n")
             print(f"Per-sample predictions written to {per_sample_jsonl}")
 
