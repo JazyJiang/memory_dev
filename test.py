@@ -220,9 +220,15 @@ def _load_t5_model_for_test(cfg, tokenizer: T5Tokenizer, device: torch.device) -
         raise FileNotFoundError(
             f"Cannot find pytorch_model.bin or model.safetensors in '{ckpt_path}'."
         )
-    missing, unexpected = model.load_state_dict(state_dict, strict=True)
-    if missing or unexpected:
-        raise RuntimeError(f"State dict mismatch. missing={missing}, unexpected={unexpected}")
+    # safetensors omits tied weights; fill them from shared.weight
+    _TIED = ["encoder.embed_tokens.weight", "decoder.embed_tokens.weight", "lm_head.weight"]
+    if "shared.weight" in state_dict:
+        for k in _TIED:
+            if k not in state_dict:
+                state_dict[k] = state_dict["shared.weight"]
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    if unexpected:
+        raise RuntimeError(f"Unexpected keys in state_dict: {unexpected}")
 
     model.to(device)
     model.eval()
