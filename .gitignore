@@ -31,5 +31,8 @@ __pycache__/
 # TensorBoard event files
 **/events.out.tfevents.*
 
+# env
+.bashrc
+
 # push permit
 !result_push.jsonl
