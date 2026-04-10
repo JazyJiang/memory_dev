@@ -210,13 +210,16 @@ def _load_t5_model_for_test(cfg, tokenizer: T5Tokenizer, device: torch.device) -
     _inject_pkm_into_t5_seq2seq(model, cfg)
 
     weights_path = os.path.join(ckpt_path, "pytorch_model.bin")
-    if not os.path.isfile(weights_path):
+    safetensors_path = os.path.join(ckpt_path, "model.safetensors")
+    if os.path.isfile(weights_path):
+        state_dict = torch.load(weights_path, map_location="cpu")
+    elif os.path.isfile(safetensors_path):
+        from safetensors.torch import load_file
+        state_dict = load_file(safetensors_path, device="cpu")
+    else:
         raise FileNotFoundError(
-            f"Cannot find '{weights_path}'. "
-            "Expected a HuggingFace Trainer-style checkpoint dir containing pytorch_model.bin."
+            f"Cannot find pytorch_model.bin or model.safetensors in '{ckpt_path}'."
         )
-
-    state_dict = torch.load(weights_path, map_location="cpu")
     missing, unexpected = model.load_state_dict(state_dict, strict=True)
     if missing or unexpected:
         raise RuntimeError(f"State dict mismatch. missing={missing}, unexpected={unexpected}")
