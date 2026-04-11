@@ -185,6 +185,7 @@ def main() -> None:
         test_log_dir.mkdir(parents=True, exist_ok=True)
 
         # Write params.json (required by write_result_jsonl.py)
+        routing = combo.get("routing", {})
         params_json = run_log_root / "params.json"
         run_log_root.mkdir(parents=True, exist_ok=True)
         params_json.write_text(json.dumps({
@@ -226,7 +227,6 @@ def main() -> None:
             pk_overrides.append(f"pkm.t5_seq2seq.{k}={str(v).lower() if isinstance(v, bool) else v}")
 
         # Routing overrides
-        routing = combo.get("routing", {})
         routing_overrides = []
         if routing.get("enabled", False):
             routing_overrides = [
