@@ -25,18 +25,43 @@ from typing import Any, Dict, List, Optional
 
 # ---------------------------------------------------------------------------
 # Sweep definition
-# Each entry is one (train_max_his_len, test_max_his_len, pk_is_enabled) combo.
+# Each entry is one experiment configuration.
+# Fields: train_h, test_h, pk (bool), label, routing (dict, optional)
 # ---------------------------------------------------------------------------
 _DELTA_COMBOS = [
-    # ref: best config — both train & test trunc=2, no PKM
+    # === Group 0: Baselines (from previous sweep) ===
     {"train_h": 2,  "test_h": 2,  "pk": False, "label": "h2_t5"},
-    # comparison: longer history at train & test, no PKM
-    {"train_h": 5,  "test_h": 5,  "pk": False, "label": "h5_t5"},
     {"train_h": 10, "test_h": 10, "pk": False, "label": "h10_t5"},
-    # PKM variants
-    {"train_h": 2,  "test_h": 2,  "pk": True,  "label": "h2_pkm"},
-    {"train_h": 5,  "test_h": 5,  "pk": True,  "label": "h5_pkm"},
     {"train_h": 10, "test_h": 10, "pk": True,  "label": "h10_pkm"},
+
+    # === Group 1: Cross-Attention Routing (FFN only) ===
+    # 1a: routing + standard FFN, h=10
+    {"train_h": 10, "test_h": 10, "pk": False, "label": "h10_route_ffn",
+     "routing": {"enabled": True, "early_layers": [3], "recent_history_len": 2}},
+    # 1b: routing + h=2 (sanity check — early mask is empty)
+    {"train_h": 2,  "test_h": 2,  "pk": False, "label": "h2_route_ffn",
+     "routing": {"enabled": True, "early_layers": [3], "recent_history_len": 2}},
+
+    # === Group 2: Routing + PKM ===
+    # 2a: routing + PKM on early layer
+    {"train_h": 10, "test_h": 10, "pk": True,  "label": "h10_route_pkm",
+     "routing": {"enabled": True, "early_layers": [3], "recent_history_len": 2}},
+    # 2b: routing + PKM + gated residual + L1
+    {"train_h": 10, "test_h": 10, "pk": True,  "label": "h10_route_pkm_gate",
+     "routing": {"enabled": True, "early_layers": [3], "recent_history_len": 2,
+                 "gate_l1_weight": 0.01},
+     "pk_extra": {"pk_mem_gated": True}},
+
+    # === Group 3: Auxiliary Loss ===
+    # 3a: routing + FFN + aux loss
+    {"train_h": 10, "test_h": 10, "pk": False, "label": "h10_route_ffn_aux",
+     "routing": {"enabled": True, "early_layers": [3], "recent_history_len": 2,
+                 "aux_loss_weight": 0.1}},
+    # 3b: routing + PKM + gate + aux loss (full combo)
+    {"train_h": 10, "test_h": 10, "pk": True,  "label": "h10_route_pkm_gate_aux",
+     "routing": {"enabled": True, "early_layers": [3], "recent_history_len": 2,
+                 "gate_l1_weight": 0.01, "aux_loss_weight": 0.1},
+     "pk_extra": {"pk_mem_gated": True}},
 ]
 
 
@@ -169,6 +194,7 @@ def main() -> None:
             "train_max_his_len": train_h,
             "test_max_his_len": test_h,
             "pk_is_enabled": pk,
+            "routing": routing,
             "train.learning_rate": args.lr,
             "train.batch_size": args.batch_size,
             "train.epochs": args.epochs,
@@ -193,6 +219,25 @@ def main() -> None:
             f"pkm.t5_seq2seq.pk_mem_k_dim={args.pk_k_dim}",
             "pkm.t5_seq2seq.pk_warmup_epochs=0",
         ]
+
+        # Per-combo PKM extras (e.g., pk_mem_gated)
+        pk_extra = combo.get("pk_extra", {})
+        for k, v in pk_extra.items():
+            pk_overrides.append(f"pkm.t5_seq2seq.{k}={str(v).lower() if isinstance(v, bool) else v}")
+
+        # Routing overrides
+        routing = combo.get("routing", {})
+        routing_overrides = []
+        if routing.get("enabled", False):
+            routing_overrides = [
+                "routing.enabled=true",
+                f"routing.early_layers=[{','.join(str(x) for x in routing.get('early_layers', [3]))}]",
+                f"routing.recent_history_len={routing.get('recent_history_len', 2)}",
+                f"routing.gate_l1_weight={routing.get('gate_l1_weight', 0.0)}",
+                f"routing.aux_loss_weight={routing.get('aux_loss_weight', 0.0)}",
+            ]
+        else:
+            routing_overrides = ["routing.enabled=false"]
 
         failed = False
 
@@ -227,7 +272,7 @@ def main() -> None:
                 "train.logging_step=1",
                 "train.save_and_eval_strategy=epoch",
                 f"train.model_max_length={args.model_max_length}",
-            ] + pk_overrides
+            ] + pk_overrides + routing_overrides
 
             rc = run_cmd(cmd_train, env_base, train_log)
             if rc != 0:
@@ -275,7 +320,7 @@ def main() -> None:
                     "test.filter_items=true",
                     "test.log_pkm_heatmap=false",
                     f"test.per_sample_jsonl={per_sample_jsonl}",
-                ] + pk_overrides
+                ] + pk_overrides + routing_overrides
 
                 rc2 = run_cmd(cmd_test, env_base, test_log)
                 if rc2 != 0:

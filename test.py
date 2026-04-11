@@ -1,5 +1,6 @@
 import os
 import sys
+from contextlib import contextmanager
 from typing import Any, List, Optional, Tuple
 
 import torch
@@ -11,6 +12,7 @@ from collator import TestCollator
 from evaluate import get_topk_results
 from generation_trie import Trie
 from models.decoder_only import DecoderOnlyForCausalLM
+from models.routed_t5 import enable_cross_attention_routing, routing_context
 from pkm.memory import HashingMemory
 from pkm.context import PKMContext
 from pkm.monitor import PKMMonitor
@@ -24,6 +26,11 @@ from utils import (
     print_results,
     set_seed,
 )
+
+
+@contextmanager
+def _nullctx():
+    yield
 
 
 def _parse_config_and_overrides(argv: List[str]) -> Tuple[Optional[str], List[str]]:
@@ -120,6 +127,11 @@ def _apply_test_defaults(cfg):
                     "pk_topk": 8,
                     "pk_mem_dim": None,
                 }
+            },
+            "routing": {
+                "enabled": False,
+                "early_layers": [3],
+                "recent_history_len": 2,
             },
         }
     )
@@ -289,6 +301,14 @@ def test(cfg):
 
     if model_type in ("t5_seq2seq", "t5"):
         model = _load_t5_model_for_test(cfg, tokenizer, device)
+
+        # Cross-attention routing
+        routing_cfg = cfg.get("routing", {})
+        if routing_cfg.get("enabled", False):
+            early_layers = set(int(x) for x in (routing_cfg.get("early_layers") or [3]))
+            enable_cross_attention_routing(model, early_layers=early_layers)
+            print(f"[routing] enabled — early_layers={sorted(early_layers)}")
+
         candidate_trie = Trie(
             [[tokenizer.pad_token_id] + tokenizer.encode(candidate) for candidate in all_items]
         )
@@ -352,17 +372,23 @@ def test(cfg):
                 PKMContext.set_group_ids(inputs["group_ids"])
 
             if model_type in ("t5_seq2seq", "t5"):
-                output = model.generate(
-                    input_ids=inputs["input_ids"],
-                    attention_mask=inputs["attention_mask"],
-                    max_new_tokens=int(cfg.test.max_new_tokens),
-                    prefix_allowed_tokens_fn=prefix_allowed_tokens,
-                    num_beams=int(cfg.test.num_beams),
-                    num_return_sequences=int(cfg.test.num_beams),
-                    output_scores=True,
-                    return_dict_in_generate=True,
-                    early_stopping=True,
-                )
+                # Activate routing context for generate() if split positions exist
+                split_pos = inputs.get("history_split_pos", None)
+                ctx_mgr = (routing_context(model, inputs["attention_mask"], split_pos)
+                           if split_pos is not None else _nullctx())
+
+                with ctx_mgr:
+                    output = model.generate(
+                        input_ids=inputs["input_ids"],
+                        attention_mask=inputs["attention_mask"],
+                        max_new_tokens=int(cfg.test.max_new_tokens),
+                        prefix_allowed_tokens_fn=prefix_allowed_tokens,
+                        num_beams=int(cfg.test.num_beams),
+                        num_return_sequences=int(cfg.test.num_beams),
+                        output_scores=True,
+                        return_dict_in_generate=True,
+                        early_stopping=True,
+                    )
                 output_ids = output["sequences"]
                 scores = output["sequences_scores"]
                 decoded = tokenizer.batch_decode(output_ids, skip_special_tokens=True)

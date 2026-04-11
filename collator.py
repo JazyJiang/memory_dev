@@ -43,8 +43,12 @@ class Collator(object):
         group_ids = [d.get("group_id", 4) for d in batch]
         inputs["group_ids"] = torch.tensor(group_ids, dtype=torch.long)
 
-        # print(inputs.input_ids[0])
-        # print(inputs.labels[0])
+        # Cross-attention routing: compute split position (early vs recent tokens)
+        if any("early_history_text" in d for d in batch):
+            early_texts = [d.get("early_history_text", "") for d in batch]
+            early_enc = self.tokenizer(early_texts, add_special_tokens=False, padding=False)
+            split_positions = [len(ids) for ids in early_enc["input_ids"]]
+            inputs["history_split_pos"] = torch.tensor(split_positions, dtype=torch.long)
 
         return inputs
 
@@ -74,5 +78,12 @@ class TestCollator(object):
 
         group_ids = [d.get("group_id", 4) for d in batch]
         inputs["group_ids"] = torch.tensor(group_ids, dtype=torch.long)
+
+        # Cross-attention routing: compute split position (early vs recent tokens)
+        if any("early_history_text" in d for d in batch):
+            early_texts = [d.get("early_history_text", "") for d in batch]
+            early_enc = self.tokenizer(early_texts, add_special_tokens=False, padding=False)
+            split_positions = [len(ids) for ids in early_enc["input_ids"]]
+            inputs["history_split_pos"] = torch.tensor(split_positions, dtype=torch.long)
 
         return (inputs, targets)

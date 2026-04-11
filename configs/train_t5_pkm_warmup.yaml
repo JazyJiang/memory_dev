@@ -49,3 +49,10 @@ pkm:
     pk_value_fixed_lr: 0.001
     pk_value_weight_decay: 0.0
     pk_warmup_epochs: 10
+
+routing:
+  enabled: false
+  early_layers: [3]
+  recent_history_len: 2
+  gate_l1_weight: 0.0
+  aux_loss_weight: 0.0

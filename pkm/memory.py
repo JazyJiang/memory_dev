@@ -318,7 +318,9 @@ class HashingMemory(nn.Module):
             output = output.view(prefix_shape + (self.v_dim,))
 
         if self.gating is not None:
-            output = torch.sigmoid(self.gating(input)) * output
+            gate_vals = torch.sigmoid(self.gating(input))
+            output = gate_vals * output
+            self._last_gate_vals = gate_vals
 
         output = output.view(B, T, -1)
 

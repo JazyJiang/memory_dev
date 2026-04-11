@@ -40,6 +40,11 @@ class BaseDataset(Dataset):
         # train-time history truncation: keep last K items. -1 = no truncation.
         self.train_max_his_len = int(_cfg_get(dataset_cfg, "train_max_his_len", -1))
 
+        # Cross-attention routing: split history into early / recent segments.
+        routing_cfg = _cfg_get(cfg, "routing", {})
+        self.routing_enabled = bool(_cfg_get(routing_cfg, "enabled", False))
+        self.routing_recent_len = int(_cfg_get(routing_cfg, "recent_history_len", 2))
+
         self.special_token_for_answer = _cfg_get(global_cfg, "special_token_for_answer", None)
 
         self.new_tokens = None
@@ -501,6 +506,9 @@ class SeqRecDatasetCSV(BaseDataset):
             if self.train_max_his_len > 0:
                 history = history[-self.train_max_his_len:]
             one_data = dict(item=target, inters=self.prompt.format(history="".join(history)), group_id=group_id)
+            if self.routing_enabled and len(history) > self.routing_recent_len:
+                one_data["early_history_text"] = "".join(history[:-self.routing_recent_len])
+                one_data["recent_history_text"] = "".join(history[-self.routing_recent_len:])
             inter_data.append(one_data)
         return inter_data
 
@@ -511,6 +519,9 @@ class SeqRecDatasetCSV(BaseDataset):
             if self.train_max_his_len > 0:
                 history = history[-self.train_max_his_len:]
             one_data = dict(item=target, inters=self.prompt.format(history="".join(history)), group_id=group_id)
+            if self.routing_enabled and len(history) > self.routing_recent_len:
+                one_data["early_history_text"] = "".join(history[:-self.routing_recent_len])
+                one_data["recent_history_text"] = "".join(history[-self.routing_recent_len:])
             inter_data.append(one_data)
         return inter_data
 
@@ -539,6 +550,9 @@ class SeqRecDatasetCSV(BaseDataset):
                 group_id=group_id, uid=uid,
                 target_title=target_title, history_titles=history_titles,
             )
+            if self.routing_enabled and len(history) > self.routing_recent_len:
+                one_data["early_history_text"] = "".join(history[:-self.routing_recent_len])
+                one_data["recent_history_text"] = "".join(history[-self.routing_recent_len:])
             inter_data.append(one_data)
         print(f"interaction in test: {len(inter_data)}")
         if self.sample_num > 0:
@@ -590,7 +604,11 @@ class SeqRecDatasetCSV(BaseDataset):
 
     def __getitem__(self, index):
         d = self.inter_data[index]
-        return dict(input_ids=d["inters"], labels=d["item"], group_id=d.get("group_id", 4))
+        out = dict(input_ids=d["inters"], labels=d["item"], group_id=d.get("group_id", 4))
+        if "early_history_text" in d:
+            out["early_history_text"] = d["early_history_text"]
+            out["recent_history_text"] = d["recent_history_text"]
+        return out
 
 
 # class SeqRecDatasetCSV(BaseDataset):

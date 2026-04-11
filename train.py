@@ -18,6 +18,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from collator import Collator
 from models.decoder_only import DecoderOnlyConfig, DecoderOnlyForCausalLM
+from models.routed_t5 import enable_cross_attention_routing, enable_aux_prediction_head
 from pkm.memory import HashingMemory
 from pkm.context import PKMContext
 from pkm.monitor import PKMMonitor
@@ -164,6 +165,13 @@ def _apply_train_defaults(cfg):
                 "pk_mem_dim": None,
                 "pk_use_gating": False,
                 "pk_warmup_epochs": 10,
+            },
+            "routing": {
+                "enabled": False,
+                "early_layers": [3],
+                "recent_history_len": 2,
+                "gate_l1_weight": 0.0,
+                "aux_loss_weight": 0.0,
             },
         }
     )
@@ -446,6 +454,19 @@ def train_t5_seq2seq(cfg) -> None:
     model = T5ForConditionalGeneration(config)
     model.resize_token_embeddings(len(tokenizer))
     _inject_pkm_into_t5_seq2seq(model, cfg)
+
+    # Cross-attention routing: different decoder layers attend to early vs recent history
+    routing_cfg = OmegaConf.to_container(cfg.get("routing", OmegaConf.create({})), resolve=True) or {}
+    if routing_cfg.get("enabled", False):
+        early_layers = set(int(x) for x in (routing_cfg.get("early_layers") or [3]))
+        enable_cross_attention_routing(model, early_layers=early_layers)
+        if float(routing_cfg.get("aux_loss_weight", 0)) > 0:
+            enable_aux_prediction_head(model, early_layers=early_layers)
+        if local_rank == 0:
+            print(f"[routing] enabled — early_layers={sorted(early_layers)}")
+            if float(routing_cfg.get("aux_loss_weight", 0)) > 0:
+                print(f"[routing] aux prediction head enabled, weight={routing_cfg['aux_loss_weight']}")
+
     model.to(device)
 
     if local_rank == 0:
@@ -455,13 +476,45 @@ def train_t5_seq2seq(cfg) -> None:
         model.is_parallelizable = True
         model.model_parallel = True
 
+    # Read routing/gate config
+    gate_l1_weight = float(
+        OmegaConf.to_container(cfg.get("routing", OmegaConf.create({})), resolve=True).get("gate_l1_weight", 0.0)
+    )
+    aux_loss_weight = float(
+        OmegaConf.to_container(cfg.get("routing", OmegaConf.create({})), resolve=True).get("aux_loss_weight", 0.0)
+    )
+
     original_forward = model.forward
     def forward_with_context(*args, **kwargs):
         PKMContext.set_training(bool(getattr(model, "training", True)))
         if "group_ids" in kwargs:
             PKMContext.set_group_ids(kwargs.pop("group_ids"))
         kwargs.pop("num_items_in_batch", None)
-        return original_forward(*args, **kwargs)
+
+        # Clear aux hidden before forward
+        if hasattr(model, "_aux_hidden"):
+            model._aux_hidden = None
+
+        output = original_forward(*args, **kwargs)
+
+        if model.training and hasattr(output, "loss") and output.loss is not None:
+            # Add L1 regularization on PKM gate values
+            if gate_l1_weight > 0:
+                l1_sum = torch.tensor(0.0, device=output.loss.device)
+                for module in model.modules():
+                    if isinstance(module, HashingMemory) and hasattr(module, "_last_gate_vals"):
+                        l1_sum = l1_sum + module._last_gate_vals.abs().mean()
+                if l1_sum > 0:
+                    output.loss = output.loss + gate_l1_weight * l1_sum
+
+            # Add auxiliary prediction loss from early layer
+            if aux_loss_weight > 0 and hasattr(model, "_aux_head") and model._aux_hidden is not None:
+                labels = kwargs.get("labels", None)
+                if labels is not None:
+                    aux_loss = model._aux_head(model._aux_hidden, labels)
+                    output.loss = output.loss + aux_loss_weight * aux_loss
+
+        return output
     model.forward = forward_with_context
 
     monitor_callback = PKMEpochCallback()
