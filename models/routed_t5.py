@@ -103,6 +103,13 @@ def enable_cross_attention_routing(
     model._routing_early_layers = early_layers  # type: ignore[attr-defined]
 
     # -- 1. Install pre-hooks on each decoder block -------------------------
+    # T5Block.forward signature (positions excluding self):
+    #   0: hidden_states, 1: attention_mask, 2: position_bias,
+    #   3: encoder_hidden_states, 4: encoder_attention_mask, ...
+    # Some transformers versions pass encoder_attention_mask positionally,
+    # others as a keyword. The hook handles both cases.
+    _ENC_ATTN_MASK_POS = 4
+
     hooks = []
     for layer_idx, block in enumerate(model.decoder.block):
         is_early = layer_idx in early_layers
@@ -112,8 +119,15 @@ def enable_cross_attention_routing(
                 if not ctx.active:
                     return None  # no-op when routing is off
                 mask = ctx.early_mask if early else ctx.recent_mask
-                if mask is not None:
+                if mask is None:
+                    return None
+                if "encoder_attention_mask" in kwargs:
                     kwargs["encoder_attention_mask"] = mask
+                elif len(args) > _ENC_ATTN_MASK_POS:
+                    # Passed as positional arg — replace in-place
+                    args = list(args)
+                    args[_ENC_ATTN_MASK_POS] = mask
+                    args = tuple(args)
                 return args, kwargs
             return _hook
 
