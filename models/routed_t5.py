@@ -121,6 +121,12 @@ def enable_cross_attention_routing(
                 mask = ctx.early_mask if early else ctx.recent_mask
                 if mask is None:
                     return None
+                # During beam search, batch is expanded by num_beams.
+                # Expand mask to match actual batch size.
+                hidden_states = args[0]
+                if mask.shape[0] != hidden_states.shape[0]:
+                    expand_factor = hidden_states.shape[0] // mask.shape[0]
+                    mask = mask.repeat_interleave(expand_factor, dim=0)
                 if "encoder_attention_mask" in kwargs:
                     kwargs["encoder_attention_mask"] = mask
                 elif len(args) > _ENC_ATTN_MASK_POS:
