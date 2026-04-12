@@ -239,6 +239,9 @@ def _load_t5_model_for_test(cfg, tokenizer: T5Tokenizer, device: torch.device) -
             if k not in state_dict:
                 state_dict[k] = state_dict["shared.weight"]
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    # _aux_head is a training-only module; its weights are expected in
+    # checkpoints trained with aux_loss but not needed at test time.
+    unexpected = [k for k in unexpected if not k.startswith("_aux_head.")]
     if unexpected:
         raise RuntimeError(f"Unexpected keys in state_dict: {unexpected}")
 
