@@ -35,6 +35,16 @@ class BaseDataset(Dataset):
         self.index_file = str(_cfg_get(dataset_cfg, "index_file", "_index.json"))
         self.add_prefix = bool(_cfg_get(dataset_cfg, "add_prefix", False))
 
+        # test-time-only history truncation: keep last K items. -1 = no truncation.
+        self.test_max_his_len = int(_cfg_get(dataset_cfg, "test_max_his_len", -1))
+        # train-time history truncation: keep last K items. -1 = no truncation.
+        self.train_max_his_len = int(_cfg_get(dataset_cfg, "train_max_his_len", -1))
+
+        # Cross-attention routing: split history into early / recent segments.
+        routing_cfg = _cfg_get(cfg, "routing", {})
+        self.routing_enabled = bool(_cfg_get(routing_cfg, "enabled", False))
+        self.routing_recent_len = int(_cfg_get(routing_cfg, "recent_history_len", 2))
+
         self.special_token_for_answer = _cfg_get(global_cfg, "special_token_for_answer", None)
 
         self.new_tokens = None
@@ -493,7 +503,12 @@ class SeqRecDatasetCSV(BaseDataset):
         inter_data = []
         for _, (uid, history, target) in self.remapped_train.items():
             group_id = self.user_group_map.get(str(uid), 4)
+            if self.train_max_his_len > 0:
+                history = history[-self.train_max_his_len:]
             one_data = dict(item=target, inters=self.prompt.format(history="".join(history)), group_id=group_id)
+            if self.routing_enabled and len(history) > self.routing_recent_len:
+                one_data["early_history_text"] = "".join(history[:-self.routing_recent_len])
+                one_data["recent_history_text"] = "".join(history[-self.routing_recent_len:])
             inter_data.append(one_data)
         return inter_data
 
@@ -501,18 +516,43 @@ class SeqRecDatasetCSV(BaseDataset):
         inter_data = []
         for _, (uid, history, target) in self.remapped_valid.items():
             group_id = self.user_group_map.get(str(uid), 4)
+            if self.train_max_his_len > 0:
+                history = history[-self.train_max_his_len:]
             one_data = dict(item=target, inters=self.prompt.format(history="".join(history)), group_id=group_id)
+            if self.routing_enabled and len(history) > self.routing_recent_len:
+                one_data["early_history_text"] = "".join(history[:-self.routing_recent_len])
+                one_data["recent_history_text"] = "".join(history[-self.routing_recent_len:])
             inter_data.append(one_data)
         return inter_data
 
     def _process_test_data(self):
         inter_data = []
-        for _, (uid, history, target) in self.remapped_test.items():
+        for index, (uid, history, target) in self.remapped_test.items():
             if self.test_group_id is not None:
                 group_id = int(self.test_group_id)
             else:
                 group_id = self.user_group_map.get(str(uid), 4)
-            one_data = dict(item=[target], inters=self.prompt.format(history="".join(history)), group_id=group_id)
+            if self.test_max_his_len > 0:
+                history = history[-self.test_max_his_len:]
+
+            # Extract titles for delta-set semantic analysis
+            row = self.test_data.iloc[index]
+            target_title = str(row["item_title"]) if "item_title" in row.index else ""
+            try:
+                history_titles = [str(t) for t in eval(row["history_item_title"])] if "history_item_title" in row.index else []
+            except Exception:
+                history_titles = []
+            if self.test_max_his_len > 0:
+                history_titles = history_titles[-self.test_max_his_len:]
+
+            one_data = dict(
+                item=[target], inters=self.prompt.format(history="".join(history)),
+                group_id=group_id, uid=uid,
+                target_title=target_title, history_titles=history_titles,
+            )
+            if self.routing_enabled and len(history) > self.routing_recent_len:
+                one_data["early_history_text"] = "".join(history[:-self.routing_recent_len])
+                one_data["recent_history_text"] = "".join(history[-self.routing_recent_len:])
             inter_data.append(one_data)
         print(f"interaction in test: {len(inter_data)}")
         if self.sample_num > 0:
@@ -564,7 +604,11 @@ class SeqRecDatasetCSV(BaseDataset):
 
     def __getitem__(self, index):
         d = self.inter_data[index]
-        return dict(input_ids=d["inters"], labels=d["item"], group_id=d.get("group_id", 4))
+        out = dict(input_ids=d["inters"], labels=d["item"], group_id=d.get("group_id", 4))
+        if "early_history_text" in d:
+            out["early_history_text"] = d["early_history_text"]
+            out["recent_history_text"] = d["recent_history_text"]
+        return out
 
 
 # class SeqRecDatasetCSV(BaseDataset):

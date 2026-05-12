@@ -674,7 +674,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--data_root", default=os.environ.get(
         "DATA_ROOT",
-        "/mlx_devbox/users/zhuosong.jiang/playground/memory_dev/data"
+        "/workspace/jiangzhuosong/memory_dev/data"
     ))
     ap.add_argument("--dataset", default=os.environ.get(
         "DATASET_FILE", "Toys_and_Games_5_2016-10-2018-11"

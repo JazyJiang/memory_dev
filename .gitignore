@@ -31,5 +31,18 @@ __pycache__/
 # TensorBoard event files
 **/events.out.tfevents.*
 
+# env
+.bashrc
+
 # push permit
 !result_push.jsonl
+# experiment launch scripts (one-off, not for repo)
+docs/run_aux_ablation.sh
+docs/run_hp_round2.sh
+docs/run_hp_search.sh
+docs/run_hp_toys_vg.sh
+docs/run_multi_dataset_sweep.sh
+RQ-VAE/run_all_rqvae.sh
+
+# experiment logs
+log/

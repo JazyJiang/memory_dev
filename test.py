@@ -1,5 +1,6 @@
 import os
 import sys
+from contextlib import contextmanager
 from typing import Any, List, Optional, Tuple
 
 import torch
@@ -11,6 +12,7 @@ from collator import TestCollator
 from evaluate import get_topk_results
 from generation_trie import Trie
 from models.decoder_only import DecoderOnlyForCausalLM
+from models.routed_t5 import enable_cross_attention_routing, routing_context
 from pkm.memory import HashingMemory
 from pkm.context import PKMContext
 from pkm.monitor import PKMMonitor
@@ -24,6 +26,11 @@ from utils import (
     print_results,
     set_seed,
 )
+
+
+@contextmanager
+def _nullctx():
+    yield
 
 
 def _parse_config_and_overrides(argv: List[str]) -> Tuple[Optional[str], List[str]]:
@@ -90,6 +97,8 @@ def _apply_test_defaults(cfg):
                 "train_file": None,
                 "valid_file": None,
                 "test_file": None,
+                "test_max_his_len": -1,
+                "train_max_his_len": -1,
             },
             "test": {
                 "task": "seqrec",
@@ -98,6 +107,7 @@ def _apply_test_defaults(cfg):
                 "max_new_tokens": 10,
                 "sample_num": -1,
                 "filter_items": False,
+                "per_sample_jsonl": "",  # if non-empty, write per-sample hit results here
             },
             "pkm": {
                 "t5_seq2seq": {
@@ -117,6 +127,11 @@ def _apply_test_defaults(cfg):
                     "pk_topk": 8,
                     "pk_mem_dim": None,
                 }
+            },
+            "routing": {
+                "enabled": False,
+                "early_layers": [3],
+                "recent_history_len": 2,
             },
         }
     )
@@ -207,16 +222,28 @@ def _load_t5_model_for_test(cfg, tokenizer: T5Tokenizer, device: torch.device) -
     _inject_pkm_into_t5_seq2seq(model, cfg)
 
     weights_path = os.path.join(ckpt_path, "pytorch_model.bin")
-    if not os.path.isfile(weights_path):
+    safetensors_path = os.path.join(ckpt_path, "model.safetensors")
+    if os.path.isfile(weights_path):
+        state_dict = torch.load(weights_path, map_location="cpu")
+    elif os.path.isfile(safetensors_path):
+        from safetensors.torch import load_file
+        state_dict = load_file(safetensors_path, device="cpu")
+    else:
         raise FileNotFoundError(
-            f"Cannot find '{weights_path}'. "
-            "Expected a HuggingFace Trainer-style checkpoint dir containing pytorch_model.bin."
+            f"Cannot find pytorch_model.bin or model.safetensors in '{ckpt_path}'."
         )
-
-    state_dict = torch.load(weights_path, map_location="cpu")
-    missing, unexpected = model.load_state_dict(state_dict, strict=True)
-    if missing or unexpected:
-        raise RuntimeError(f"State dict mismatch. missing={missing}, unexpected={unexpected}")
+    # safetensors omits tied weights; fill them from shared.weight
+    _TIED = ["encoder.embed_tokens.weight", "decoder.embed_tokens.weight", "lm_head.weight"]
+    if "shared.weight" in state_dict:
+        for k in _TIED:
+            if k not in state_dict:
+                state_dict[k] = state_dict["shared.weight"]
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    # _aux_head is a training-only module; its weights are expected in
+    # checkpoints trained with aux_loss but not needed at test time.
+    unexpected = [k for k in unexpected if not k.startswith("_aux_head.")]
+    if unexpected:
+        raise RuntimeError(f"Unexpected keys in state_dict: {unexpected}")
 
     model.to(device)
     model.eval()
@@ -277,6 +304,14 @@ def test(cfg):
 
     if model_type in ("t5_seq2seq", "t5"):
         model = _load_t5_model_for_test(cfg, tokenizer, device)
+
+        # Cross-attention routing
+        routing_cfg = cfg.get("routing", {})
+        if routing_cfg.get("enabled", False):
+            early_layers = set(int(x) for x in (routing_cfg.get("early_layers") or [3]))
+            enable_cross_attention_routing(model, early_layers=early_layers)
+            print(f"[routing] enabled — early_layers={sorted(early_layers)}")
+
         candidate_trie = Trie(
             [[tokenizer.pad_token_id] + tokenizer.encode(candidate) for candidate in all_items]
         )
@@ -340,17 +375,23 @@ def test(cfg):
                 PKMContext.set_group_ids(inputs["group_ids"])
 
             if model_type in ("t5_seq2seq", "t5"):
-                output = model.generate(
-                    input_ids=inputs["input_ids"],
-                    attention_mask=inputs["attention_mask"],
-                    max_new_tokens=int(cfg.test.max_new_tokens),
-                    prefix_allowed_tokens_fn=prefix_allowed_tokens,
-                    num_beams=int(cfg.test.num_beams),
-                    num_return_sequences=int(cfg.test.num_beams),
-                    output_scores=True,
-                    return_dict_in_generate=True,
-                    early_stopping=True,
-                )
+                # Activate routing context for generate() if split positions exist
+                split_pos = inputs.get("history_split_pos", None)
+                ctx_mgr = (routing_context(model, inputs["attention_mask"], split_pos)
+                           if split_pos is not None else _nullctx())
+
+                with ctx_mgr:
+                    output = model.generate(
+                        input_ids=inputs["input_ids"],
+                        attention_mask=inputs["attention_mask"],
+                        max_new_tokens=int(cfg.test.max_new_tokens),
+                        prefix_allowed_tokens_fn=prefix_allowed_tokens,
+                        num_beams=int(cfg.test.num_beams),
+                        num_return_sequences=int(cfg.test.num_beams),
+                        output_scores=True,
+                        return_dict_in_generate=True,
+                        early_stopping=True,
+                    )
                 output_ids = output["sequences"]
                 scores = output["sequences_scores"]
                 decoded = tokenizer.batch_decode(output_ids, skip_special_tokens=True)
@@ -406,6 +447,30 @@ def test(cfg):
         test_results = computeTopNAccuracy(all_gold_list, all_pred_list, topN=[5, 10, 20])
         print("=== End ===")
         print_results(None, None, test_results)
+
+        # Optional per-sample JSONL output (for delta-set analysis)
+        per_sample_jsonl = str(getattr(cfg.test, "per_sample_jsonl", "") or "").strip()
+        if per_sample_jsonl:
+            import json as _json
+            from pathlib import Path as _Path
+            _Path(per_sample_jsonl).parent.mkdir(parents=True, exist_ok=True)
+            topN_ks = [5, 10, 20]
+            with open(per_sample_jsonl, "w") as _f:
+                for _i, (_gold, _preds) in enumerate(zip(all_gold_list, all_pred_list)):
+                    _hits = {f"hit@{k}": any(p in _gold for p in _preds[:k]) for k in topN_ks}
+                    _meta = test_data.inter_data[_i] if _i < len(test_data.inter_data) else {}
+                    _f.write(_json.dumps({
+                        "row_idx": _i,
+                        "gold": _gold,
+                        "preds_top5": _preds[:5],
+                        "preds_top10": _preds[:10],
+                        "preds_top20": _preds[:20],
+                        **_hits,
+                        "group_id": _meta.get("group_id", -1),
+                        "target_title": _meta.get("target_title", ""),
+                        "history_titles": _meta.get("history_titles", []),
+                    }, ensure_ascii=False) + "\n")
+            print(f"Per-sample predictions written to {per_sample_jsonl}")
 
 
 if __name__ == "__main__":

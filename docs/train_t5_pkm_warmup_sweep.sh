@@ -24,8 +24,8 @@ CODE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${CODE_ROOT}"
 
 DATASET=${DATASET:-Toys_and_Games}
-DATA_ROOT=${DATA_ROOT:-/mlx_devbox/users/zhuosong.jiang/playground/memory_dev/data}
-AMAZON_ROOT=${AMAZON_ROOT:-/mlx_devbox/users/zhuosong.jiang/playground/memory_dev/data}
+DATA_ROOT=${DATA_ROOT:-/workspace/jiangzhuosong/memory_dev/data}
+AMAZON_ROOT=${AMAZON_ROOT:-/workspace/jiangzhuosong/memory_dev/data}
 
 BASE_MODEL=${BASE_MODEL:-google-t5/t5-small}
 STRATEGY=t5_seq2seq

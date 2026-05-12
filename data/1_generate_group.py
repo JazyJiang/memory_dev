@@ -17,6 +17,7 @@ def group_test_by_prev_period(
     curr_period_path,
     k=5,
     output_dir=None,
+    dataset_name=None,
 ):
     """
     For period D_t:
@@ -62,9 +63,11 @@ def group_test_by_prev_period(
 
     # ===== 5️⃣ write grouped test files =====
     if output_dir is None:
-        output_dir = os.path.join(
-            os.path.dirname(curr_period_path), "groups"
-        )
+        base = os.path.join(os.path.dirname(curr_period_path), "groups")
+        if dataset_name:
+            output_dir = os.path.join(base, dataset_name)
+        else:
+            output_dir = base
     os.makedirs(output_dir, exist_ok=True)
 
     for g in sorted(curr_df["user_group"].dropna().unique()):
@@ -76,15 +79,26 @@ def group_test_by_prev_period(
     return user_df[["user_id", "user_group"]]
 
 
-# DATA_ROOT = "/home/xinyulin/context/data/2026-01-25_5period"
-DATA_ROOT ="/mlx_devbox/users/zhuosong.jiang/playground/memory_dev/data"
-for t in range(1, 5):
-    prev_path = f"{DATA_ROOT}/D{t-1}/Toys_and_Games_5_2016-10-2018-11.csv"
-    curr_path = f"{DATA_ROOT}/D{t}/Toys_and_Games_5_2016-10-2018-11.csv"
+import argparse
 
-    print(f"\n=== Grouping D{t} using D{t-1} ===")
-    group_test_by_prev_period(
-        prev_period_path=prev_path,
-        curr_period_path=curr_path,
-        k=5,
-    )
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset", type=str, required=True,
+                        help="CSV filename stem, e.g. Toys_and_Games_5_2016-10-2018-11")
+    parser.add_argument("--data_root", type=str, default="/workspace/jiangzhuosong/memory_dev/data")
+    parser.add_argument("--k", type=int, default=5)
+    args = parser.parse_args()
+
+    dataset_name = args.dataset.split("_5_")[0]
+
+    for t in range(1, 5):
+        prev_path = f"{args.data_root}/D{t-1}/{args.dataset}.csv"
+        curr_path = f"{args.data_root}/D{t}/{args.dataset}.csv"
+
+        print(f"\n=== Grouping D{t} using D{t-1} ({dataset_name}) ===")
+        group_test_by_prev_period(
+            prev_period_path=prev_path,
+            curr_period_path=curr_path,
+            k=args.k,
+            dataset_name=dataset_name,
+        )

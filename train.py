@@ -18,6 +18,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from collator import Collator
 from models.decoder_only import DecoderOnlyConfig, DecoderOnlyForCausalLM
+from models.routed_t5 import enable_cross_attention_routing, enable_aux_prediction_head
 from pkm.memory import HashingMemory
 from pkm.context import PKMContext
 from pkm.monitor import PKMMonitor
@@ -123,7 +124,7 @@ def _apply_train_defaults(cfg):
                 "test_file": None,
             },
             "model": {
-                "t5_seq2seq": {"base_model": "", "tokenizer_max_length": 512},
+                "t5_seq2seq": {"base_model": "", "tokenizer_max_length": 512, "init_from": ""},
                 "decoder_only": {"base_model": "", "tokenizer_max_length": 512},
             },
             "pkm": {
@@ -164,6 +165,13 @@ def _apply_train_defaults(cfg):
                 "pk_mem_dim": None,
                 "pk_use_gating": False,
                 "pk_warmup_epochs": 10,
+            },
+            "routing": {
+                "enabled": False,
+                "early_layers": [3],
+                "recent_history_len": 2,
+                "gate_l1_weight": 0.0,
+                "aux_loss_weight": 0.0,
             },
         }
     )
@@ -403,6 +411,33 @@ class PKMEpochCallback(transformers.TrainerCallback):
             self._writer = None
 
 
+
+def _load_checkpoint_weights(model, ckpt_path: str, local_rank: int = 0):
+    """Load weights from a saved checkpoint into an already-constructed model."""
+    import os
+    weights_path = os.path.join(ckpt_path, "pytorch_model.bin")
+    safetensors_path = os.path.join(ckpt_path, "model.safetensors")
+    if os.path.isfile(weights_path):
+        state_dict = torch.load(weights_path, map_location="cpu", weights_only=True)
+    elif os.path.isfile(safetensors_path):
+        from safetensors.torch import load_file
+        state_dict = load_file(safetensors_path, device="cpu")
+    else:
+        raise FileNotFoundError(f"No weights found in {ckpt_path}")
+    _TIED = ["encoder.embed_tokens.weight", "decoder.embed_tokens.weight", "lm_head.weight"]
+    if "shared.weight" in state_dict:
+        for k in _TIED:
+            if k not in state_dict:
+                state_dict[k] = state_dict["shared.weight"]
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    unexpected = [k for k in unexpected if not k.startswith("_aux_head.")]
+    if local_rank == 0:
+        if missing:
+            print(f"[init] Missing keys (newly initialized): {missing}")
+        if unexpected:
+            print(f"[init] Unexpected keys (ignored): {unexpected}")
+
+
 def train_t5_seq2seq(cfg) -> None:
     set_seed(int(cfg["global"].seed))
     ensure_dir(str(cfg.train.output_dir))
@@ -446,6 +481,30 @@ def train_t5_seq2seq(cfg) -> None:
     model = T5ForConditionalGeneration(config)
     model.resize_token_embeddings(len(tokenizer))
     _inject_pkm_into_t5_seq2seq(model, cfg)
+
+    # Cross-attention routing: different decoder layers attend to early vs recent history
+    routing_cfg = OmegaConf.to_container(cfg.get("routing", OmegaConf.create({})), resolve=True) or {}
+    early_layers = set(int(x) for x in (routing_cfg.get("early_layers") or [3]))
+    if routing_cfg.get("enabled", False):
+        enable_cross_attention_routing(model, early_layers=early_layers)
+        if local_rank == 0:
+            print(f"[routing] enabled, early_layers={sorted(early_layers)}")
+
+    aux_w = float(routing_cfg.get("aux_loss_weight", 0))
+    if aux_w > 0:
+        enable_aux_prediction_head(model, early_layers=early_layers)
+        if local_rank == 0:
+            print(f"[aux] prediction head on layers {sorted(early_layers)}, weight={aux_w}")
+    # Load weights: from previous checkpoint (continual) or random init (D0)
+    init_from = str(cfg.model.t5_seq2seq.get("init_from", "") or "").strip()
+    if init_from and os.path.isdir(init_from):
+        if local_rank == 0:
+            print(f"[continual] Loading weights from {init_from}")
+        _load_checkpoint_weights(model, init_from, local_rank)
+    else:
+        if local_rank == 0:
+            print("[init] Random initialization (D0)")
+
     model.to(device)
 
     if local_rank == 0:
@@ -455,13 +514,45 @@ def train_t5_seq2seq(cfg) -> None:
         model.is_parallelizable = True
         model.model_parallel = True
 
+    # Read routing/gate config
+    gate_l1_weight = float(
+        OmegaConf.to_container(cfg.get("routing", OmegaConf.create({})), resolve=True).get("gate_l1_weight", 0.0)
+    )
+    aux_loss_weight = float(
+        OmegaConf.to_container(cfg.get("routing", OmegaConf.create({})), resolve=True).get("aux_loss_weight", 0.0)
+    )
+
     original_forward = model.forward
     def forward_with_context(*args, **kwargs):
         PKMContext.set_training(bool(getattr(model, "training", True)))
         if "group_ids" in kwargs:
             PKMContext.set_group_ids(kwargs.pop("group_ids"))
         kwargs.pop("num_items_in_batch", None)
-        return original_forward(*args, **kwargs)
+
+        # Clear aux hidden before forward
+        if hasattr(model, "_aux_hidden"):
+            model._aux_hidden = None
+
+        output = original_forward(*args, **kwargs)
+
+        if model.training and hasattr(output, "loss") and output.loss is not None:
+            # Add L1 regularization on PKM gate values
+            if gate_l1_weight > 0:
+                l1_sum = torch.tensor(0.0, device=output.loss.device)
+                for module in model.modules():
+                    if isinstance(module, HashingMemory) and hasattr(module, "_last_gate_vals"):
+                        l1_sum = l1_sum + module._last_gate_vals.abs().mean()
+                if l1_sum > 0:
+                    output.loss = output.loss + gate_l1_weight * l1_sum
+
+            # Add auxiliary prediction loss from early layer
+            if aux_loss_weight > 0 and hasattr(model, "_aux_head") and model._aux_hidden is not None:
+                labels = kwargs.get("labels", None)
+                if labels is not None:
+                    aux_loss = model._aux_head(model._aux_hidden, labels)
+                    output.loss = output.loss + aux_loss_weight * aux_loss
+
+        return output
     model.forward = forward_with_context
 
     monitor_callback = PKMEpochCallback()
@@ -470,7 +561,7 @@ def train_t5_seq2seq(cfg) -> None:
         train_dataset=train_data,
         eval_dataset=valid_data,
         args=_build_training_arguments(cfg, ddp=ddp),
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         data_collator=collator,
         callbacks=[monitor_callback],
     )
@@ -648,7 +739,7 @@ def train_decoder_only(cfg) -> None:
         train_dataset=train_data,
         eval_dataset=valid_data,
         args=_build_training_arguments(cfg, ddp=ddp),
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         data_collator=collator,
         optimizers=(optimizer, None),
         callbacks=[PKMDiagnosticsCallback()],
