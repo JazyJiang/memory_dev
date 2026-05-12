@@ -99,7 +99,7 @@ RQ-VAE 将 T5 embedding 离散化为 4 级 codebook ID (`<a_X><b_X><c_X><d_X>`)�
 | Beam search width | 20 |
 | Test batch size | 8 |
 | Metrics | Recall@{5,10,20}, NDCG@{5,10,20} |
-| Grouping | G0–G4 (按历史活跃度) |
+| Grouping | G0–G4 (按用户在 D_{t-1} 的活跃度分组，评估 D_t) |
 
 ---
 
