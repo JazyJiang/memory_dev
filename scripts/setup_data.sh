@@ -35,7 +35,7 @@ echo " Device: $DEVICE"
 echo "=========================================="
 
 # ── Step 1: Download raw data ──
-echo "[Step 1/6] Downloading raw data..."
+echo "[Step 1/7] Downloading raw data..."
 cd "$RAW_DIR"
 BASE_URL="https://mcauleylab.ucsd.edu/public_datasets/data/amazon_v2"
 
@@ -56,22 +56,31 @@ else
 fi
 
 # ── Step 2: Process data (temporal split + K-core) ──
-echo "[Step 2/6] Processing data (temporal split + K-core filtering)..."
+echo "[Step 2/7] Processing data (temporal split + K-core filtering)..."
 cd "$REPO_ROOT/data"
 python 0_process.py --category "$DATASET" --K 5 \
     --st_year $ST_YEAR --st_month $ST_MONTH \
     --ed_year $ED_YEAR --ed_month $ED_MONTH
 
 # ── Step 3: Generate test groups ──
-echo "[Step 3/6] Generating test groups..."
+echo "[Step 3/7] Generating test groups..."
 python 1_generate_group.py --data_root "$DATA_DIR" --dataset "${FULL_NAME}"
 
 # ── Step 4: Generate user-group map ──
-echo "[Step 4/6] Generating user-group map..."
+echo "[Step 4/7] Generating user-group map..."
 python 2_generate_user_group_map.py --data_root "$DATA_DIR" --dataset_name "${FULL_NAME}" --n_groups 5
 
-# ── Step 5: Generate T5 embeddings ──
-echo "[Step 5/6] Generating item embeddings with T5..."
+# ── Step 5: Ensure T5 model is available ──
+echo "[Step 5/7] Checking / downloading T5-small model..."
+python3 << DLEOF
+from transformers import T5EncoderModel, T5Tokenizer
+T5EncoderModel.from_pretrained("google-t5/t5-small")
+T5Tokenizer.from_pretrained("google-t5/t5-small")
+print("  T5-small model ready")
+DLEOF
+
+# ── Step 6: Generate T5 embeddings ──
+echo "[Step 6/7] Generating item embeddings with T5..."
 TDCB_PATH="${INFO_DIR}/${FULL_NAME}_combine_tdcb_maps.npy"
 EMB_PATH="${INFO_DIR}/${DATASET}.emb-t5-tdcb.npy"
 
@@ -86,8 +95,8 @@ else
     echo "  Embeddings already exist, skipping"
 fi
 
-# ── Step 6: Train RQ-VAE + generate TIGER index ──
-echo "[Step 6/6] Training RQ-VAE and generating TIGER index..."
+# ── Step 7: Train RQ-VAE + generate TIGER index ──
+echo "[Step 7/7] Training RQ-VAE and generating TIGER index..."
 INDEX_PATH="${INFO_DIR}/${DATASET}.TIGER-index.json"
 
 if [ ! -f "$INDEX_PATH" ]; then

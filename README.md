@@ -69,8 +69,7 @@ wait
 ```
 ├── run.sh                    # Unified experiment launcher
 ├── scripts/
-│   ├── setup_data.sh         # Data download + processing pipeline
-│   └── download_model.sh     # Download T5-small for offline use
+│   └── setup_data.sh         # Data download + processing pipeline
 ├── train.py                  # Training entry point
 ├── test.py                   # Evaluation (beam search + ranking)
 ├── data.py                   # Dataset classes
@@ -84,7 +83,3 @@ wait
 │   └── run_delta_set_sweep.py  # Sweep runner (called by run.sh)
 └── data/                     # Processed data (after setup_data.sh)
 ```
-
-## Detailed Documentation
-
-See [SETUP_GUIDE.md](SETUP_GUIDE.md) for step-by-step instructions and troubleshooting.

@@ -124,7 +124,7 @@ def _apply_train_defaults(cfg):
                 "test_file": None,
             },
             "model": {
-                "t5_seq2seq": {"base_model": "", "tokenizer_max_length": 512},
+                "t5_seq2seq": {"base_model": "", "tokenizer_max_length": 512, "init_from": ""},
                 "decoder_only": {"base_model": "", "tokenizer_max_length": 512},
             },
             "pkm": {
@@ -411,6 +411,33 @@ class PKMEpochCallback(transformers.TrainerCallback):
             self._writer = None
 
 
+
+def _load_checkpoint_weights(model, ckpt_path: str, local_rank: int = 0):
+    """Load weights from a saved checkpoint into an already-constructed model."""
+    import os
+    weights_path = os.path.join(ckpt_path, "pytorch_model.bin")
+    safetensors_path = os.path.join(ckpt_path, "model.safetensors")
+    if os.path.isfile(weights_path):
+        state_dict = torch.load(weights_path, map_location="cpu", weights_only=True)
+    elif os.path.isfile(safetensors_path):
+        from safetensors.torch import load_file
+        state_dict = load_file(safetensors_path, device="cpu")
+    else:
+        raise FileNotFoundError(f"No weights found in {ckpt_path}")
+    _TIED = ["encoder.embed_tokens.weight", "decoder.embed_tokens.weight", "lm_head.weight"]
+    if "shared.weight" in state_dict:
+        for k in _TIED:
+            if k not in state_dict:
+                state_dict[k] = state_dict["shared.weight"]
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    unexpected = [k for k in unexpected if not k.startswith("_aux_head.")]
+    if local_rank == 0:
+        if missing:
+            print(f"[init] Missing keys (newly initialized): {missing}")
+        if unexpected:
+            print(f"[init] Unexpected keys (ignored): {unexpected}")
+
+
 def train_t5_seq2seq(cfg) -> None:
     set_seed(int(cfg["global"].seed))
     ensure_dir(str(cfg.train.output_dir))
@@ -457,15 +484,26 @@ def train_t5_seq2seq(cfg) -> None:
 
     # Cross-attention routing: different decoder layers attend to early vs recent history
     routing_cfg = OmegaConf.to_container(cfg.get("routing", OmegaConf.create({})), resolve=True) or {}
+    early_layers = set(int(x) for x in (routing_cfg.get("early_layers") or [3]))
     if routing_cfg.get("enabled", False):
-        early_layers = set(int(x) for x in (routing_cfg.get("early_layers") or [3]))
         enable_cross_attention_routing(model, early_layers=early_layers)
-        if float(routing_cfg.get("aux_loss_weight", 0)) > 0:
-            enable_aux_prediction_head(model, early_layers=early_layers)
         if local_rank == 0:
-            print(f"[routing] enabled — early_layers={sorted(early_layers)}")
-            if float(routing_cfg.get("aux_loss_weight", 0)) > 0:
-                print(f"[routing] aux prediction head enabled, weight={routing_cfg['aux_loss_weight']}")
+            print(f"[routing] enabled, early_layers={sorted(early_layers)}")
+
+    aux_w = float(routing_cfg.get("aux_loss_weight", 0))
+    if aux_w > 0:
+        enable_aux_prediction_head(model, early_layers=early_layers)
+        if local_rank == 0:
+            print(f"[aux] prediction head on layers {sorted(early_layers)}, weight={aux_w}")
+    # Load weights: from previous checkpoint (continual) or random init (D0)
+    init_from = str(cfg.model.t5_seq2seq.get("init_from", "") or "").strip()
+    if init_from and os.path.isdir(init_from):
+        if local_rank == 0:
+            print(f"[continual] Loading weights from {init_from}")
+        _load_checkpoint_weights(model, init_from, local_rank)
+    else:
+        if local_rank == 0:
+            print("[init] Random initialization (D0)")
 
     model.to(device)
 
