@@ -1,42 +1,90 @@
-# Memory Dev
+# Tiger-CL: Continual Learning for Sequential Recommendation
 
-## Sweep Train (PKM Warmup)
+T5-based generative sequential recommender with **Product-Key Memory (PKM)**, **Cross-Attention Routing**, and **Auxiliary Loss** for continual learning across temporal data splits.
 
-基本启动方式：
-
-```bash
-CUDA_VISIBLE_DEVICES=0 python docs/run_t5_pkm_warmup_sweep.py --num_workers 1 --worker_id 0
-```
-
-多卡并行（每张卡跑不同的 sweep 组合）：
+## Quick Start
 
 ```bash
-# GPU 0 跑 worker 0，GPU 1 跑 worker 1
-CUDA_VISIBLE_DEVICES=0 python docs/run_t5_pkm_warmup_sweep.py --num_workers 2 --worker_id 0 &
-CUDA_VISIBLE_DEVICES=1 python docs/run_t5_pkm_warmup_sweep.py --num_workers 2 --worker_id 1 &
+# 1. Install dependencies
+pip install -r requirements.txt
+
+# 2. Prepare data (download + process + generate TIGER index)
+bash scripts/setup_data.sh Toys_and_Games cuda:0
+
+# 3. Run experiments
+bash run.sh Toys_and_Games baseline_h10 0      # single baseline
+bash run.sh Toys_and_Games all 0               # all methods
 ```
 
-常用参数：
+## Supported Datasets
 
-| 参数 | 默认值 | 说明 |
-|---|---|---|
-| `--dataset` | `Toys_and_Games` | 数据集名称 |
-| `--data_root` | `./data` | 数据根目录 |
-| `--epochs` | 读取 sweep yaml | 每个阶段训练 epoch 数 |
-| `--num_workers` | `1` | 并行 worker 总数 |
-| `--worker_id` | `0` | 当前 worker 编号（从 0 开始） |
-| `--sweep_yaml` | `docs/pkm_warmup_sweep.yaml` | sweep 配置文件 |
-| `--result_jsonl` | `log/{dataset}/.../result.jsonl` | 结果输出路径 |
-| `--resume_from_result` | 无 | 跳过已完成的实验（断点续跑） |
-| `--cleanup_ckpt` | `1` | 实验结束后是否删除 checkpoint |
-| `--dry_run` | 无 | 只打印命令不实际运行 |
+| Dataset | Time Range | Approx. Size |
+|---------|-----------|--------------|
+| `Toys_and_Games` | 2016-10 ~ 2018-11 | ~170K interactions |
+| `Video_Games` | 2012-10 ~ 2018-11 | ~230K interactions |
+| `CDs_and_Vinyl` | 2014-10 ~ 2018-11 | ~350K interactions |
+| `Books` | 2016-10 ~ 2018-11 | ~1.5M interactions |
 
-Sweep 的搜索空间在 `docs/pkm_warmup_sweep.yaml` 里定义，当前配置：
+## Experiment Methods
 
-```yaml
-sweep_params:
-  d0_warmup_epochs: [0]          # D0 阶段 warmup epoch 候选
-  finetune_warmup_epochs: [30, 40]  # D1~D3 阶段 warmup epoch 候选
+```bash
+bash run.sh <dataset> <method> <gpu_id>
 ```
 
-结果汇总到 `log/{dataset}/sweep_t5_pkm_warmup/result.jsonl`，运行状态记录在同目录的 `sweep_status.jsonl`。
+| Method | Description |
+|--------|-------------|
+| `baseline_h2` | T5, history truncated to 2 items |
+| `baseline_h10` | T5, history truncated to 10 items |
+| `baseline_h20` | T5, history truncated to 20 items |
+| `routing` | Cross-attention routing (early vs recent history) |
+| `routing_aux` | Routing + auxiliary prediction loss |
+| `pkm` | T5 + Product-Key Memory |
+| `pkm_routing_aux` | Full: PKM + Routing + Gated + Aux Loss |
+| `all` | Run all of the above sequentially |
+
+## CL Protocol
+
+Each experiment runs the full continual learning chain:
+```
+D0 train → test on D1 (per group)
+D1 finetune → test on D2 (per group)
+D2 finetune → test on D3 (per group)
+D3 finetune → test on D4 (per group)
+```
+
+Results are saved to `log/<dataset>/delta_set_sweep/result.jsonl`.
+
+## Multi-GPU Parallel
+
+Run different methods on different GPUs:
+```bash
+bash run.sh Toys_and_Games baseline_h10 0 &
+bash run.sh Toys_and_Games routing_aux 1 &
+bash run.sh Toys_and_Games pkm 2 &
+wait
+```
+
+## Project Structure
+
+```
+├── run.sh                    # Unified experiment launcher
+├── scripts/
+│   ├── setup_data.sh         # Data download + processing pipeline
+│   └── download_model.sh     # Download T5-small for offline use
+├── train.py                  # Training entry point
+├── test.py                   # Evaluation (beam search + ranking)
+├── data.py                   # Dataset classes
+├── models/
+│   ├── routed_t5.py          # Cross-attention routing + aux head
+│   └── decoder_only/         # Decoder-only Transformer (optional)
+├── pkm/                      # Product-Key Memory module
+├── RQ-VAE/                   # Semantic ID generation
+├── configs/                  # Training configs (OmegaConf YAML)
+├── docs/
+│   └── run_delta_set_sweep.py  # Sweep runner (called by run.sh)
+└── data/                     # Processed data (after setup_data.sh)
+```
+
+## Detailed Documentation
+
+See [SETUP_GUIDE.md](SETUP_GUIDE.md) for step-by-step instructions and troubleshooting.

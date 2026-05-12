@@ -32,6 +32,7 @@ _DELTA_COMBOS = [
     # === Group 0: Baselines (from previous sweep) ===
     {"train_h": 2,  "test_h": 2,  "pk": False, "label": "h2_t5"},
     {"train_h": 10, "test_h": 10, "pk": False, "label": "h10_t5"},
+    {"train_h": 20, "test_h": 20, "pk": False, "label": "h20_t5"},
     {"train_h": 10, "test_h": 10, "pk": True,  "label": "h10_pkm"},
 
     # === Group 1: Cross-Attention Routing (FFN only) ===
@@ -62,6 +63,20 @@ _DELTA_COMBOS = [
      "routing": {"enabled": True, "early_layers": [3], "recent_history_len": 2,
                  "gate_l1_weight": 0.01, "aux_loss_weight": 0.1},
      "pk_extra": {"pk_mem_gated": True}},
+    # === Group 4: Routing + PKM + Aux (no gate) ===
+    # 4a: routing + PKM + aux loss, without gated residual
+    {"train_h": 10, "test_h": 10, "pk": True,  "label": "h10_route_pkm_aux",
+     "routing": {"enabled": True, "early_layers": [3], "recent_history_len": 2,
+                 "aux_loss_weight": 0.1}},
+    # === Group 5: Aux only (no routing) ===
+    # 5a: aux loss only, no cross-attention routing
+    {"train_h": 10, "test_h": 10, "pk": False, "label": "h10_aux",
+     "routing": {"enabled": False, "early_layers": [3],
+                 "aux_loss_weight": 0.1}},
+    # 5b: PKM + aux loss, no routing
+    {"train_h": 10, "test_h": 10, "pk": True,  "label": "h10_pkm_aux",
+     "routing": {"enabled": False, "early_layers": [3],
+                 "aux_loss_weight": 0.1}},
 ]
 
 
@@ -143,12 +158,20 @@ def main() -> None:
     ap.add_argument("--num_workers", type=int, default=1)
     ap.add_argument("--worker_id", type=int, default=0)
     ap.add_argument("--master_port_base", type=int, default=int(os.environ.get("MASTER_PORT_BASE", "2500")))
+    ap.add_argument("--ft_lr", type=float, default=None, help="Learning rate for D1+ (default: same as --lr)")
+    ap.add_argument("--ft_epochs", type=int, default=None, help="Epochs for D1+ (default: same as --epochs)")
+    ap.add_argument("--labels", default=None, help="Comma-separated labels to run (default: all)")
     ap.add_argument("--dry_run", action="store_true")
     ap.add_argument("--resume", action="store_true", help="Skip combos already in result_jsonl")
     args = ap.parse_args()
 
     if args.result_jsonl is None:
-        args.result_jsonl = f"./log/{args.dataset}/delta_set_sweep/result.jsonl"
+        ft_tag = ""
+        if args.ft_lr is not None or args.ft_epochs is not None:
+            ft_lr = args.ft_lr if args.ft_lr is not None else args.lr
+            ft_ep = args.ft_epochs if args.ft_epochs is not None else args.epochs
+            ft_tag = f"_ftlr{ft_lr}_ftep{ft_ep}"
+        args.result_jsonl = f"./log/{args.dataset}/delta_set_sweep{ft_tag}/result.jsonl"
     result_jsonl = Path(args.result_jsonl)
     status_jsonl = result_jsonl.with_name("status.jsonl")
     per_sample_root = result_jsonl.parent / "per_sample"
@@ -172,11 +195,17 @@ def main() -> None:
         test_h = int(combo["test_h"])
         pk = bool(combo["pk"])
 
+        # Filter by --labels if specified
+        if args.labels and label not in args.labels.split(","):
+            continue
+
         if label in seen_labels:
             print(f"[skip] {label} already in result_jsonl")
             continue
 
-        run_tag = f"delta_{label}_ep{args.epochs}_lr{args.lr}_bs{args.batch_size}"
+        ft_lr = args.ft_lr if args.ft_lr is not None else args.lr
+        ft_ep = args.ft_epochs if args.ft_epochs is not None else args.epochs
+        run_tag = f"delta_{label}_ep{args.epochs}_lr{args.lr}_ftlr{ft_lr}_ftep{ft_ep}_bs{args.batch_size}"
         run_ckpt_root = Path(args.ckpt_root) / args.dataset / "delta_set" / run_tag
         run_log_root = repo_root / "log" / args.dataset / "delta_set_sweep" / run_tag
         train_log_dir = run_log_root / "train"
@@ -238,8 +267,14 @@ def main() -> None:
             ]
         else:
             routing_overrides = ["routing.enabled=false"]
+            aux_w = routing.get("aux_loss_weight", 0.0)
+            if float(aux_w) > 0:
+                routing_overrides.append(f"routing.aux_loss_weight={aux_w}")
+                el = routing.get("early_layers", [3])
+                routing_overrides.append("routing.early_layers=[{}]".format(",".join(str(x) for x in el)))
 
         failed = False
+        prev_ckpt = None
 
         for train_d in range(4):  # D0, D1, D2, D3
             test_d = train_d + 1
@@ -266,13 +301,16 @@ def main() -> None:
                 f"dataset.index_file={args.index_file}",
                 f"dataset.train_max_his_len={train_h}",
                 f"train.batch_size={args.batch_size}",
-                f"train.learning_rate={args.lr}",
-                f"train.epochs={args.epochs}",
+                f"train.learning_rate={ft_lr if train_d > 0 else args.lr}",
+                f"train.epochs={ft_ep if train_d > 0 else args.epochs}",
                 f"train.weight_decay={args.wd}",
                 "train.logging_step=1",
                 "train.save_and_eval_strategy=epoch",
                 f"train.model_max_length={args.model_max_length}",
             ] + pk_overrides + routing_overrides
+            # Continual learning: D1+ loads from previous period checkpoint
+            if prev_ckpt:
+                cmd_train.append(f"model.t5_seq2seq.init_from={prev_ckpt}")
 
             rc = run_cmd(cmd_train, env_base, train_log)
             if rc != 0:
@@ -284,7 +322,7 @@ def main() -> None:
                 break
 
             # ── Test on each group file ──
-            group_dir = Path(args.data_root) / f"D{test_d}" / "groups"
+            group_dir = Path(args.data_root) / f"D{test_d}" / "groups" / args.dataset
             group_files = sorted(glob.glob(str(group_dir / "*.csv")))
             if not group_files:
                 append_jsonl(status_jsonl, {
@@ -334,12 +372,14 @@ def main() -> None:
             if failed:
                 break
 
-            # ── Delete checkpoint for this period ──
-            try:
-                subprocess.run(["rm", "-rf", str(cur_ckpt)], check=False)
-                print(f"[cleanup] deleted {cur_ckpt}")
-            except Exception as e:
-                print(f"[cleanup] warning: {e}")
+            # ── Delete PREVIOUS period's checkpoint (no longer needed) ──
+            if prev_ckpt:
+                try:
+                    subprocess.run(["rm", "-rf", str(prev_ckpt)], check=False)
+                    print(f"[cleanup] deleted {prev_ckpt}")
+                except Exception as e:
+                    print(f"[cleanup] warning: {e}")
+            prev_ckpt = cur_ckpt
 
         # If all periods done, collect aggregate metrics and write to result_jsonl
         if not failed:
@@ -368,6 +408,12 @@ def main() -> None:
                 "created_at": utc_now(), "status": "done", "label": label,
             })
             print(f"[done] {label}")
+            # Clean up last period checkpoint
+            if prev_ckpt:
+                try:
+                    subprocess.run(["rm", "-rf", str(prev_ckpt)], check=False)
+                except Exception:
+                    pass
         else:
             # Clean up remaining ckpt dirs on failure
             try:
