@@ -35,7 +35,6 @@ bash run.sh <dataset> <method> <gpu_id>
 |--------|-------------|
 | `baseline_h2` | T5, history truncated to 2 items |
 | `baseline_h10` | T5, history truncated to 10 items |
-| `baseline_h20` | T5, history truncated to 20 items |
 | `routing` | Cross-attention routing (early vs recent history) |
 | `routing_aux` | Routing + auxiliary prediction loss |
 | `pkm` | T5 + Product-Key Memory |

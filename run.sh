@@ -9,7 +9,6 @@ set -euo pipefail
 # Methods:
 #   baseline_h2       — T5 baseline, history=2
 #   baseline_h10      — T5 baseline, history=10
-#   baseline_h20      — T5 baseline, history=20
 #   routing           — Cross-attention routing, h=10
 #   routing_aux       — Routing + auxiliary loss, h=10
 #   pkm               — T5 + Product-Key Memory, h=10
@@ -45,14 +44,13 @@ esac
 case $METHOD in
     baseline_h2)      LABELS="h2_t5" ;;
     baseline_h10)     LABELS="h10_t5" ;;
-    baseline_h20)     LABELS="h20_t5" ;;
     routing)          LABELS="h10_route_ffn" ;;
     routing_aux)      LABELS="h10_route_ffn_aux" ;;
     pkm)             LABELS="h10_pkm" ;;
     pkm_routing_aux) LABELS="h10_route_pkm_gate_aux" ;;
     all)             LABELS="" ;;
     *)  echo "Error: Unknown method "
-        echo "Supported: baseline_h2, baseline_h10, baseline_h20, routing, routing_aux, pkm, pkm_routing_aux, all"
+        echo "Supported: baseline_h2, baseline_h10, routing, routing_aux, pkm, pkm_routing_aux, all"
         exit 1 ;;
 esac
 

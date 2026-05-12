@@ -32,7 +32,6 @@ _DELTA_COMBOS = [
     # === Group 0: Baselines (from previous sweep) ===
     {"train_h": 2,  "test_h": 2,  "pk": False, "label": "h2_t5"},
     {"train_h": 10, "test_h": 10, "pk": False, "label": "h10_t5"},
-    {"train_h": 20, "test_h": 20, "pk": False, "label": "h20_t5"},
     {"train_h": 10, "test_h": 10, "pk": True,  "label": "h10_pkm"},
 
     # === Group 1: Cross-Attention Routing (FFN only) ===

@@ -21,7 +21,7 @@ case $DATASET in
     Toys_and_Games)   ST_YEAR=2016; ST_MONTH=10; ED_YEAR=2018; ED_MONTH=11 ;;
     Video_Games)      ST_YEAR=2012; ST_MONTH=10; ED_YEAR=2018; ED_MONTH=11 ;;
     CDs_and_Vinyl)    ST_YEAR=2014; ST_MONTH=10; ED_YEAR=2018; ED_MONTH=11 ;;
-    Books)            ST_YEAR=2016; ST_MONTH=10; ED_YEAR=2018; ED_MONTH=11 ;;
+    Books)            ST_YEAR=2017; ST_MONTH=10; ED_YEAR=2018; ED_MONTH=11 ;;
     *)  echo "Unknown dataset: $DATASET"; echo "Supported: Toys_and_Games, Video_Games, CDs_and_Vinyl, Books"; exit 1 ;;
 esac
 
