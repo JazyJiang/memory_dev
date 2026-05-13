@@ -47,10 +47,11 @@ case $METHOD in
     routing)          LABELS="h10_route_ffn" ;;
     routing_aux)      LABELS="h10_route_ffn_aux" ;;
     pkm)             LABELS="h10_pkm" ;;
-    pkm_routing_aux) LABELS="h10_route_pkm_gate_aux" ;;
+    pkm_routing_aux)      LABELS="h10_route_pkm_aux" ;;
+    pkm_routing_aux_gate) LABELS="h10_route_pkm_gate_aux" ;;
     all)             LABELS="" ;;
     *)  echo "Error: Unknown method "
-        echo "Supported: baseline_h2, baseline_h10, routing, routing_aux, pkm, pkm_routing_aux, all"
+        echo "Supported: baseline_h2, baseline_h10, routing, routing_aux, pkm, pkm_routing_aux, pkm_routing_aux_gate, all"
         exit 1 ;;
 esac
 
